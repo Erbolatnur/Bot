@@ -258,7 +258,7 @@ async def status():
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
         },
-        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login"],
+        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login", "projects_crud", "persistent_match_history"],
     }
 
 
@@ -327,7 +327,7 @@ async def projects_update(project_id: str, payload: ProjectUpdateRequest, reques
     if not identity:
         raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
     _require_storage()
-    fields = payload.model_dump(exclude_unset=True)
+    fields = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not fields:
         raise HTTPException(status_code=422, detail="No project fields supplied")
     item = storage.update_project(identity[0], identity[1], project_id, fields)
