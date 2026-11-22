@@ -44,6 +44,7 @@ export default function Home() {
    fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});
    try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
  }, []);
+ useEffect(()=>{ try { window.localStorage.setItem('cs2dh-steam-matches',JSON.stringify(steamDecodedMatches)); } catch {} },[steamDecodedMatches]);
  async function loadFaceitMatches(player:FaceitPlayer) {
    setMatchLoading(player.player_id); setMatchErrors(prev=>({...prev,[player.player_id]:''}));
    try {
