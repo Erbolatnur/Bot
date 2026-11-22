@@ -43,6 +43,11 @@ app.add_middleware(
 FACEIT_API = "https://open.faceit.com/data/v4"
 STEAM_OPENID = "https://steamcommunity.com/openid/login"
 COOKIE_NAME = "cs2dh_session"
+FACEIT_COOKIE_NAME = "cs2dh_faceit_session"
+FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth"
+FACEIT_AUTH_URL = "https://accounts.faceit.com"
+FACEIT_TOKEN_URL = "https://api.faceit.com/auth/v1/oauth/token"
+FACEIT_USERINFO_URL = "https://api.faceit.com/auth/v1/resources/userinfo"
 FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth_state"
 FACEIT_SESSION_COOKIE = "cs2dh_faceit_session"
 FACEIT_AUTHORIZATION_ENDPOINT = "https://accounts.faceit.com"
@@ -63,6 +68,30 @@ def _make_session(steam_id: str) -> str:
     signature = hmac.new(settings.session_secret.encode(), payload.encode(), hashlib.sha256).digest()
     return payload + "." + _b64(signature)
 
+
+
+def _signed_cookie(payload_data: dict, purpose: str) -> str:
+    if not settings.session_secret:
+        raise HTTPException(status_code=503, detail="Session secret is not configured")
+    payload = _b64(json.dumps(payload_data, separators=(",", ":")).encode())
+    signature = hmac.new(settings.session_secret.encode(), f"{purpose}:{payload}".encode(), hashlib.sha256).digest()
+    return payload + "." + _b64(signature)
+
+
+def _read_signed_cookie(token: str | None, purpose: str) -> dict | None:
+    if not token or not settings.session_secret or "." not in token:
+        return None
+    payload, signature = token.rsplit(".", 1)
+    expected = _b64(hmac.new(settings.session_secret.encode(), f"{purpose}:{payload}".encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        if int(time.time()) - int(data.get("iat", 0)) > 30 * 86400:
+            return None
+        return data
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
 
 def _read_session(token: str | None) -> dict | None:
     if not token or not settings.session_secret or "." not in token:
@@ -241,6 +270,7 @@ async def status():
             "faceit_oauth": "ready" if _faceit_oauth_ready() else "needs_configuration",
             "steam_match_provider": "requires_authenticated_steam_client_worker",
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
+            "faceit_oauth": "configured" if (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url) else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
@@ -313,6 +343,94 @@ async def faceit_demo_download_url(match_id: str):
     if not download_url:
         raise HTTPException(status_code=502, detail="FACEIT did not return a signed download URL")
     return {"download_url": download_url, "expires_or_access": "provider-controlled", "match_id": match_id}
+
+
+
+@app.get("/api/v1/auth/faceit/login", tags=["faceit-auth"])
+async def faceit_login():
+    if not (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and
+            settings.faceit_oauth_redirect_url and settings.session_secret):
+        raise HTTPException(status_code=503, detail="FACEIT OAuth is not configured. Add FACEIT_OAUTH_CLIENT_ID, FACEIT_OAUTH_CLIENT_SECRET and FACEIT_OAUTH_REDIRECT_URL.")
+    import secrets
+    verifier = _b64(secrets.token_bytes(48))
+    challenge = _b64(hashlib.sha256(verifier.encode()).digest())
+    state = _b64(secrets.token_bytes(32))
+    signed_state = _signed_cookie({"state": state, "verifier": verifier, "iat": int(time.time())}, "faceit-oauth-state")
+    params = {
+        "client_id": settings.faceit_oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.faceit_oauth_redirect_url,
+        "scope": "openid profile",
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    response = RedirectResponse(FACEIT_AUTH_URL + "?" + urlencode(params), status_code=302)
+    response.set_cookie(FACEIT_STATE_COOKIE, signed_state, httponly=True, secure=True,
+                        samesite="lax", max_age=600, path="/")
+    return response
+
+
+@app.get("/api/v1/auth/faceit/callback", tags=["faceit-auth"])
+async def faceit_callback(request: Request):
+    if request.query_params.get("error"):
+        raise HTTPException(status_code=401, detail="FACEIT authorization was declined or failed")
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    pending = _read_signed_cookie(request.cookies.get(FACEIT_STATE_COOKIE), "faceit-oauth-state")
+    if not code or not state or not pending or not hmac.compare_digest(state, str(pending.get("state", ""))):
+        raise HTTPException(status_code=400, detail="Invalid or expired FACEIT OAuth state")
+    if not (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url):
+        raise HTTPException(status_code=503, detail="FACEIT OAuth credentials are not configured")
+    async with httpx.AsyncClient(timeout=20) as client:
+        token_response = await client.post(
+            FACEIT_TOKEN_URL,
+            data={"grant_type": "authorization_code", "code": code,
+                  "redirect_uri": settings.faceit_oauth_redirect_url,
+                  "code_verifier": pending["verifier"]},
+            auth=(settings.faceit_oauth_client_id, settings.faceit_oauth_client_secret),
+            headers={"Accept": "application/json"},
+        )
+        if token_response.is_error:
+            raise HTTPException(status_code=502, detail=f"FACEIT token exchange failed (HTTP {token_response.status_code})")
+        access_token = token_response.json().get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
+        user_response = await client.get(FACEIT_USERINFO_URL,
+                                         headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
+        if user_response.is_error:
+            raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
+        profile = user_response.json()
+    identity = {
+        "provider": "faceit",
+        "faceit_id": profile.get("guid") or profile.get("sub") or profile.get("id"),
+        "nickname": profile.get("nickname") or profile.get("name"),
+        "picture": profile.get("picture"),
+        "iat": int(time.time()),
+    }
+    if not identity["faceit_id"]:
+        raise HTTPException(status_code=502, detail="FACEIT profile response did not contain a user identifier")
+    response = RedirectResponse(settings.frontend_origin.rstrip("/") + "/?faceit=connected", status_code=303)
+    response.set_cookie(FACEIT_COOKIE_NAME, _signed_cookie(identity, "faceit-session"),
+                        httponly=True, secure=True, samesite="none", max_age=30 * 86400, path="/")
+    response.delete_cookie(FACEIT_STATE_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/v1/auth/faceit/me", tags=["faceit-auth"])
+async def faceit_auth_me(request: Request):
+    session = _read_signed_cookie(request.cookies.get(FACEIT_COOKIE_NAME), "faceit-session")
+    if not session:
+        return {"authenticated": False, "provider": "faceit"}
+    return {"authenticated": True, "provider": "faceit", "faceit_id": session.get("faceit_id"),
+            "nickname": session.get("nickname"), "picture": session.get("picture")}
+
+
+@app.post("/api/v1/auth/faceit/logout", tags=["faceit-auth"])
+async def faceit_auth_logout():
+    response = RedirectResponse(settings.frontend_origin, status_code=303)
+    response.delete_cookie(FACEIT_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="none")
+    return response
 
 
 @app.get("/api/v1/auth/steam/login", tags=["steam"])
