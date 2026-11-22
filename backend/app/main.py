@@ -301,7 +301,7 @@ async def faceit_login():
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
-    response = RedirectResponse(FACEIT_AUTH_URL + "?" + urlencode(params), status_code=302)
+    response = RedirectResponse(FACEIT_AUTHORIZATION_ENDPOINT + "?" + urlencode(params), status_code=302)
     response.set_cookie(FACEIT_STATE_COOKIE, signed_state, httponly=True, secure=True,
                         samesite="lax", max_age=600, path="/")
     return response
@@ -320,7 +320,7 @@ async def faceit_callback(request: Request):
         raise HTTPException(status_code=503, detail="FACEIT OAuth credentials are not configured")
     async with httpx.AsyncClient(timeout=20) as client:
         token_response = await client.post(
-            FACEIT_TOKEN_URL,
+            FACEIT_TOKEN_ENDPOINT,
             data={"grant_type": "authorization_code", "code": code,
                   "redirect_uri": settings.faceit_oauth_redirect_url,
                   "code_verifier": pending["verifier"]},
@@ -332,7 +332,7 @@ async def faceit_callback(request: Request):
         access_token = token_response.json().get("access_token")
         if not access_token:
             raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
-        user_response = await client.get(FACEIT_USERINFO_URL,
+        user_response = await client.get(FACEIT_USERINFO_ENDPOINT,
                                          headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
         if user_response.is_error:
             raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
