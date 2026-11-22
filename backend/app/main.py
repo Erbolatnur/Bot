@@ -11,6 +11,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,7 @@ class Settings(BaseSettings):
     faceit_oauth_client_id: str | None = None
     faceit_oauth_client_secret: str | None = None
     faceit_oauth_redirect_url: str | None = None
+    steam_web_api_key: str | None = None
     steam_openid_enabled: bool = False
     steam_openid_return_url: str | None = None
     steam_openid_realm: str | None = None
@@ -268,14 +270,14 @@ async def status():
         "integrations": {
             "steam_openid": "ready" if steam_ready else "needs_configuration",
             "faceit_oauth": "ready" if _faceit_oauth_ready() else "needs_configuration",
-            "steam_match_provider": "requires_authenticated_steam_client_worker",
+            "steam_match_provider": "ready" if settings.steam_web_api_key else "needs_steam_web_api_key",
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
             "faceit_oauth": "configured" if (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url) else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
         },
-        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "faceit_oauth_login"],
+        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login"],
     }
 
 
