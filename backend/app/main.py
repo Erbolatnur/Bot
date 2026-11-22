@@ -11,6 +11,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,11 +24,22 @@ class Settings(BaseSettings):
     faceit_oauth_client_id: str | None = None
     faceit_oauth_client_secret: str | None = None
     faceit_oauth_redirect_url: str | None = None
+    steam_web_api_key: str | None = None
     steam_openid_enabled: bool = False
     steam_openid_return_url: str | None = None
     steam_openid_realm: str | None = None
     session_secret: str | None = None
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class SteamMatchImportRequest(BaseModel):
+    authentication_code: str = Field(min_length=10, max_length=32)
+    known_match_code: str = Field(min_length=20, max_length=64)
+
+class SteamShareCodeRequest(BaseModel):
+    share_code: str = Field(min_length=34, max_length=34)
+
+
 
 
 settings = Settings()
@@ -44,17 +56,10 @@ FACEIT_API = "https://open.faceit.com/data/v4"
 STEAM_OPENID = "https://steamcommunity.com/openid/login"
 COOKIE_NAME = "cs2dh_session"
 FACEIT_COOKIE_NAME = "cs2dh_faceit_session"
-FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth"
-FACEIT_AUTH_URL = "https://accounts.faceit.com"
-FACEIT_TOKEN_URL = "https://api.faceit.com/auth/v1/oauth/token"
-FACEIT_USERINFO_URL = "https://api.faceit.com/auth/v1/resources/userinfo"
 FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth_state"
-FACEIT_SESSION_COOKIE = "cs2dh_faceit_session"
 FACEIT_AUTHORIZATION_ENDPOINT = "https://accounts.faceit.com"
 FACEIT_TOKEN_ENDPOINT = "https://api.faceit.com/auth/v1/oauth/token"
 FACEIT_USERINFO_ENDPOINT = "https://api.faceit.com/auth/v1/resources/userinfo"
-# Temporary in-memory token storage; tokens never reach browser JavaScript.
-faceit_sessions: dict[str, dict] = {}
 
 
 def _b64(data: bytes) -> str:
@@ -151,102 +156,38 @@ def _verify_signed_payload(token: str | None, max_age: int = 600) -> dict | None
         return None
 
 
+def _decode_steam_share_code(raw_code: str) -> dict:
+    """Decode a legacy CSGO- match share code into its Valve match identifiers."""
+    alphabet = "ABCDEFGHJKLMNOPQRSTUVWXYZabcdefhijkmnopqrstuvwxyz23456789"
+    code = raw_code.strip()
+    match = re.fullmatch(r"(?i:CSGO)-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", code)
+    if not match:
+        raise HTTPException(status_code=422, detail="Invalid match sharing code format")
+    compact = "".join(match.groups())
+    if any(char not in alphabet for char in compact):
+        raise HTTPException(status_code=422, detail="Match sharing code contains unsupported characters")
+    value = 0
+    for char in reversed(compact):
+        value = value * len(alphabet) + alphabet.index(char)
+    try:
+        payload = value.to_bytes(18, byteorder="big")
+    except OverflowError:
+        raise HTTPException(status_code=422, detail="Match sharing code is outside the valid range")
+    match_id = int.from_bytes(payload[0:8], byteorder="little")
+    reservation_id = int.from_bytes(payload[8:16], byteorder="little")
+    tv_port = int.from_bytes(payload[16:18], byteorder="little")
+    if match_id == 0 or reservation_id == 0:
+        raise HTTPException(status_code=422, detail="Match sharing code does not contain valid match identifiers")
+    return {
+        "match_id": str(match_id),
+        "reservation_id": str(reservation_id),
+        "tv_port": tv_port,
+    }
+
+
 def _faceit_oauth_ready() -> bool:
     return bool(settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret
                 and settings.faceit_oauth_redirect_url and settings.session_secret)
-
-
-@app.get("/api/v1/auth/faceit/login", tags=["faceit-auth"])
-async def faceit_login():
-    if not _faceit_oauth_ready():
-        raise HTTPException(status_code=503, detail="FACEIT OAuth is not configured. Add OAuth Client ID and Client Secret in Render.")
-    state = secrets.token_urlsafe(32)
-    verifier = secrets.token_urlsafe(64)
-    challenge = _b64(hashlib.sha256(verifier.encode()).digest())
-    state_cookie = _signed_payload({"state": state, "verifier": verifier, "iat": int(time.time())})
-    params = {
-        "client_id": settings.faceit_oauth_client_id,
-        "redirect_uri": settings.faceit_oauth_redirect_url,
-        "response_type": "code",
-        "scope": "openid profile",
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    response = RedirectResponse(FACEIT_AUTHORIZATION_ENDPOINT + "?" + urlencode(params), status_code=302)
-    response.set_cookie(FACEIT_STATE_COOKIE, state_cookie, httponly=True, secure=True,
-                        samesite="lax", max_age=600, path="/")
-    return response
-
-
-@app.get("/api/v1/auth/faceit/callback", tags=["faceit-auth"])
-async def faceit_callback(request: Request):
-    state_data = _verify_signed_payload(request.cookies.get(FACEIT_STATE_COOKIE))
-    if not state_data or not hmac.compare_digest(str(state_data.get("state", "")), request.query_params.get("state", "")):
-        raise HTTPException(status_code=400, detail="FACEIT OAuth state validation failed")
-    if request.query_params.get("error"):
-        raise HTTPException(status_code=400, detail="FACEIT authorization was denied or failed")
-    code = request.query_params.get("code")
-    if not code:
-        raise HTTPException(status_code=400, detail="FACEIT authorization code is missing")
-    if not _faceit_oauth_ready():
-        raise HTTPException(status_code=503, detail="FACEIT OAuth is not configured")
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(
-            FACEIT_TOKEN_ENDPOINT,
-            auth=(settings.faceit_oauth_client_id, settings.faceit_oauth_client_secret),
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": settings.faceit_oauth_redirect_url,
-                "code_verifier": state_data["verifier"],
-            },
-            headers={"Accept": "application/json"},
-        )
-        if token_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT token exchange failed (HTTP {token_response.status_code})")
-        token_data = token_response.json()
-        access_token = token_data.get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
-        user_response = await client.get(
-            FACEIT_USERINFO_ENDPOINT,
-            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
-        )
-        if user_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
-        user = user_response.json()
-    sid = secrets.token_urlsafe(32)
-    faceit_sessions[sid] = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token"),
-        "expires_at": int(time.time()) + int(token_data.get("expires_in", 3600)),
-        "user": user,
-    }
-    result = RedirectResponse(settings.frontend_origin.rstrip("/") + "/?faceit=connected", status_code=303)
-    result.set_cookie(FACEIT_SESSION_COOKIE, _signed_payload({"sid": sid, "iat": int(time.time())}),
-                      httponly=True, secure=True, samesite="none", max_age=30*86400, path="/")
-    result.delete_cookie(FACEIT_STATE_COOKIE, path="/")
-    return result
-
-
-@app.get("/api/v1/auth/faceit/me", tags=["faceit-auth"])
-async def faceit_auth_me(request: Request):
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE), max_age=30 * 86400)
-    record = faceit_sessions.get(session.get("sid")) if session else None
-    if not record:
-        return {"authenticated": False, "user": None}
-    return {"authenticated": True, "user": record.get("user")}
-
-
-@app.post("/api/v1/auth/faceit/logout", tags=["faceit-auth"])
-async def faceit_logout(request: Request):
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE))
-    if session:
-        faceit_sessions.pop(session.get("sid"), None)
-    response = RedirectResponse(settings.frontend_origin, status_code=303)
-    response.delete_cookie(FACEIT_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="none")
-    return response
 
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["system"])
@@ -261,21 +202,20 @@ async def health():
 
 @app.get("/api/v1/status", tags=["system"])
 async def status():
-    steam_ready = bool(settings.steam_openid_enabled and settings.steam_openid_return_url and settings.session_secret)
+    steam_ready = bool(settings.steam_openid_enabled and settings.steam_openid_return_url and settings.steam_openid_realm and settings.session_secret)
     return {
         "project": "CS2 DEMO HUB",
         "phase": "provider-integration",
         "integrations": {
             "steam_openid": "ready" if steam_ready else "needs_configuration",
-            "faceit_oauth": "ready" if _faceit_oauth_ready() else "needs_configuration",
-            "steam_match_provider": "requires_authenticated_steam_client_worker",
+            "steam_match_provider": "ready" if settings.steam_web_api_key else "needs_steam_web_api_key",
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
-            "faceit_oauth": "configured" if (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url) else "needs_oauth_credentials",
+            "faceit_oauth": "configured" if _faceit_oauth_ready() else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
         },
-        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "faceit_oauth_login"],
+        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login"],
     }
 
 
@@ -283,6 +223,21 @@ async def status():
 async def list_matches(source: str = "all"):
     return {"items": [], "source": source, "configured": False,
             "message": "Steam Game Coordinator and FACEIT player account must be connected before match history is shown."}
+
+
+@app.post("/api/v1/steam/matches/decode", tags=["steam"])
+async def decode_steam_match_code(payload: SteamShareCodeRequest):
+    decoded = _decode_steam_share_code(payload.share_code)
+    normalized = "CSGO-" + "-".join(re.fullmatch(r"(?i:CSGO)-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", payload.share_code.strip()).groups())
+    steam_uri = "steam://run/730//+csgo_download_match%20" + normalized
+    return {
+        "status": "decoded",
+        "share_code": normalized,
+        **decoded,
+        "steam_launch_uri": steam_uri,
+        "metadata_available": False,
+        "message": "The code identifies a Valve match. Full match metadata and cloud demo download require a Steam Game Coordinator connection.",
+    }
 
 
 @app.get("/api/v1/faceit/players", tags=["faceit"])
@@ -314,6 +269,36 @@ async def faceit_player_matches(player_id: str, limit: int = Query(default=20, g
             "demo_available": bool(match.get("demo_url") or match.get("demo_urls")),
         })
     return {"items": items, "source": "FACEIT Data API", "player_id": player_id}
+
+
+@app.get("/api/v1/auth/faceit/matches", tags=["faceit-auth"])
+async def faceit_my_matches(request: Request, limit: int = Query(default=20, ge=1, le=100)):
+    """Return the connected FACEIT user's public CS2 match history."""
+    identity = _read_signed_cookie(request.cookies.get(FACEIT_COOKIE_NAME), "faceit-session")
+    if not identity:
+        raise HTTPException(status_code=401, detail="Connect your FACEIT account first")
+    nickname = identity.get("nickname")
+    if not nickname:
+        raise HTTPException(status_code=422, detail="FACEIT profile did not provide a nickname")
+
+    player = await _faceit_get("/players", {"nickname": nickname, "game": "cs2"})
+    player_id = player.get("player_id")
+    if not player_id:
+        raise HTTPException(status_code=404, detail="Could not match the connected FACEIT profile to a CS2 player")
+
+    history = await _faceit_get(f"/players/{player_id}/history", {"game": "cs2", "offset": 0, "limit": limit})
+    items = []
+    for match in history.get("items", []):
+        demo_values = match.get("demo_url") or match.get("demo_urls") or []
+        items.append({
+            "match_id": match.get("match_id"),
+            "started_at": match.get("started_at"),
+            "finished_at": match.get("finished_at"),
+            "game_mode": match.get("game_mode"),
+            "map": (match.get("demo") or {}).get("map") if isinstance(match.get("demo"), dict) else None,
+            "demo_available": bool(demo_values),
+        })
+    return {"items": items, "source": "FACEIT Data API", "player_id": player_id, "nickname": nickname}
 
 
 @app.get("/api/v1/faceit/matches/{match_id}", tags=["faceit"])
@@ -365,7 +350,7 @@ async def faceit_login():
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
-    response = RedirectResponse(FACEIT_AUTH_URL + "?" + urlencode(params), status_code=302)
+    response = RedirectResponse(FACEIT_AUTHORIZATION_ENDPOINT + "?" + urlencode(params), status_code=302)
     response.set_cookie(FACEIT_STATE_COOKIE, signed_state, httponly=True, secure=True,
                         samesite="lax", max_age=600, path="/")
     return response
@@ -384,7 +369,7 @@ async def faceit_callback(request: Request):
         raise HTTPException(status_code=503, detail="FACEIT OAuth credentials are not configured")
     async with httpx.AsyncClient(timeout=20) as client:
         token_response = await client.post(
-            FACEIT_TOKEN_URL,
+            FACEIT_TOKEN_ENDPOINT,
             data={"grant_type": "authorization_code", "code": code,
                   "redirect_uri": settings.faceit_oauth_redirect_url,
                   "code_verifier": pending["verifier"]},
@@ -396,7 +381,7 @@ async def faceit_callback(request: Request):
         access_token = token_response.json().get("access_token")
         if not access_token:
             raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
-        user_response = await client.get(FACEIT_USERINFO_URL,
+        user_response = await client.get(FACEIT_USERINFO_ENDPOINT,
                                          headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
         if user_response.is_error:
             raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
@@ -472,6 +457,51 @@ async def steam_callback(request: Request):
     result.set_cookie(COOKIE_NAME, _make_session(steam_id), httponly=True, secure=True,
                       samesite="none", max_age=30 * 86400, path="/")
     return result
+
+
+_STEAM_AUTH_CODE_RE = re.compile(r"^[A-Z0-9]{4,5}(?:-[A-Z0-9]{4,5}){2,3}$", re.IGNORECASE)
+_STEAM_MATCH_CODE_RE = re.compile(r"^CSGO-[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4,5}$", re.IGNORECASE)
+
+
+@app.post("/api/v1/steam/matches/next", tags=["steam-matches"])
+async def steam_next_match(request: Request, payload: SteamMatchImportRequest):
+    """Fetch one next match-sharing code. Submitted credentials are not persisted."""
+    session = _read_session(request.cookies.get(COOKIE_NAME))
+    if not session:
+        raise HTTPException(status_code=401, detail="Sign in with Steam before importing matches")
+    if not settings.steam_web_api_key:
+        raise HTTPException(status_code=503, detail="Steam Web API key is not configured on the server")
+    if not _STEAM_AUTH_CODE_RE.fullmatch(payload.authentication_code):
+        raise HTTPException(status_code=422, detail="Invalid Steam Game Authentication Code format")
+    if not _STEAM_MATCH_CODE_RE.fullmatch(payload.known_match_code):
+        raise HTTPException(status_code=422, detail="Invalid CS2 Match Sharing Code format")
+    params = {"key": settings.steam_web_api_key, "steamid": session["steam_id"],
+              "steamidkey": payload.authentication_code, "knowncode": payload.known_match_code}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get("https://api.steampowered.com/ICSGOPlayers_730/GetNextMatchSharingCode/v1/",
+                                        params=params, headers={"Accept": "application/json"})
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Steam did not respond in time; try again later")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach Steam match-history service")
+    if response.status_code == 202:
+        return {"status": "up_to_date", "next_code": None, "message": "No newer match is available"}
+    if response.status_code == 412:
+        raise HTTPException(status_code=422, detail="Match Sharing Code is invalid or does not belong to this Steam account")
+    if response.status_code == 403:
+        raise HTTPException(status_code=403, detail="Steam rejected the Game Authentication Code")
+    if response.status_code in (429, 503):
+        raise HTTPException(status_code=503, detail="Steam rate limit or temporary restriction; retry later")
+    if response.is_error:
+        raise HTTPException(status_code=502, detail=f"Steam match-history service returned HTTP {response.status_code}")
+    try:
+        next_code = response.json().get("result", {}).get("nextcode")
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Steam returned an unreadable response")
+    if not isinstance(next_code, str) or not next_code.startswith("CSGO-"):
+        raise HTTPException(status_code=502, detail="Steam response did not contain a valid next match code")
+    return {"status": "next_match_available", "next_code": next_code}
 
 
 @app.get("/api/v1/auth/me", tags=["auth"])
