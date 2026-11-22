@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +31,11 @@ class Settings(BaseSettings):
     steam_openid_realm: str | None = None
     session_secret: str | None = None
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class SteamMatchImportRequest(BaseModel):
+    authentication_code: str = Field(min_length=10, max_length=32)
+    known_match_code: str = Field(min_length=20, max_length=64)
 
 
 settings = Settings()
@@ -507,6 +513,51 @@ async def steam_callback(request: Request):
     result.set_cookie(COOKIE_NAME, _make_session(steam_id), httponly=True, secure=True,
                       samesite="none", max_age=30 * 86400, path="/")
     return result
+
+
+_STEAM_AUTH_CODE_RE = re.compile(r"^[A-Z0-9]{4,5}(?:-[A-Z0-9]{4,5}){2,3}$", re.IGNORECASE)
+_STEAM_MATCH_CODE_RE = re.compile(r"^CSGO-[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4,5}$", re.IGNORECASE)
+
+
+@app.post("/api/v1/steam/matches/next", tags=["steam-matches"])
+async def steam_next_match(request: Request, payload: SteamMatchImportRequest):
+    """Fetch one next match-sharing code. Submitted credentials are not persisted."""
+    session = _read_session(request.cookies.get(COOKIE_NAME))
+    if not session:
+        raise HTTPException(status_code=401, detail="Sign in with Steam before importing matches")
+    if not settings.steam_web_api_key:
+        raise HTTPException(status_code=503, detail="Steam Web API key is not configured on the server")
+    if not _STEAM_AUTH_CODE_RE.fullmatch(payload.authentication_code):
+        raise HTTPException(status_code=422, detail="Invalid Steam Game Authentication Code format")
+    if not _STEAM_MATCH_CODE_RE.fullmatch(payload.known_match_code):
+        raise HTTPException(status_code=422, detail="Invalid CS2 Match Sharing Code format")
+    params = {"key": settings.steam_web_api_key, "steamid": session["steam_id"],
+              "steamidkey": payload.authentication_code, "knowncode": payload.known_match_code}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get("https://api.steampowered.com/ICSGOPlayers_730/GetNextMatchSharingCode/v1/",
+                                        params=params, headers={"Accept": "application/json"})
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Steam did not respond in time; try again later")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach Steam match-history service")
+    if response.status_code == 202:
+        return {"status": "up_to_date", "next_code": None, "message": "No newer match is available"}
+    if response.status_code == 412:
+        raise HTTPException(status_code=422, detail="Match Sharing Code is invalid or does not belong to this Steam account")
+    if response.status_code == 403:
+        raise HTTPException(status_code=403, detail="Steam rejected the Game Authentication Code")
+    if response.status_code in (429, 503):
+        raise HTTPException(status_code=503, detail="Steam rate limit or temporary restriction; retry later")
+    if response.is_error:
+        raise HTTPException(status_code=502, detail=f"Steam match-history service returned HTTP {response.status_code}")
+    try:
+        next_code = response.json().get("result", {}).get("nextcode")
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Steam returned an unreadable response")
+    if not isinstance(next_code, str) or not next_code.startswith("CSGO-"):
+        raise HTTPException(status_code=502, detail="Steam response did not contain a valid next match code")
+    return {"status": "next_match_available", "next_code": next_code}
 
 
 @app.get("/api/v1/auth/me", tags=["auth"])
