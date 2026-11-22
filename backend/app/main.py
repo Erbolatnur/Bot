@@ -145,7 +145,7 @@ async def faceit_player_matches(player_id: str, limit: int = Query(default=20, g
             "started_at": match.get("started_at"),
             "finished_at": match.get("finished_at"),
             "game_mode": match.get("game_mode"),
-            "map": (match.get(" demo") or {}).get("map") if isinstance(match.get("demo"), dict) else None,
+            "map": (match.get("demo") or {}).get("map") if isinstance(match.get("demo"), dict) else None,
             "demo_available": bool(match.get("demo_url") or match.get("demo_urls")),
         })
     return {"items": items, "source": "FACEIT Data API", "player_id": player_id}
