@@ -62,7 +62,7 @@ export default function Home() {
    fetch(API + '/api/v1/status').then(async r => { if(!r.ok) throw new Error(); const d=await r.json(); setApiStatus(d.integrations?.faceit_data_api || 'online'); })
      .catch(() => setApiStatus('offline'));
    fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated){setSteamId(d.steam_id); void loadProjects(); void loadUnifiedMatches(); void loadDemos();}}).catch(()=>{});
-   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated){setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture}); void loadProjects(); void loadUnifiedMatches();}}).catch(()=>{});
+   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated){setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture}); void loadProjects(); void loadUnifiedMatches(); void loadDemos();}}).catch(()=>{});
    try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
    setSteamStorageLoaded(true);
  }, []);
