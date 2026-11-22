@@ -96,12 +96,6 @@ class FaceitOAuthTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertIn(main.FACEIT_COOKIE_NAME, response.headers.get("set-cookie", ""))
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SteamShareCodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_known_share_code_decodes_to_expected_identifiers(self):
         transport = httpx.ASGITransport(app=main.app)
@@ -128,3 +122,25 @@ class SteamShareCodeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.status_code, 422)
+
+
+class ProjectCorsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_patch_and_delete_preflight_are_allowed(self):
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+            for method in ("PATCH", "DELETE"):
+                response = await client.options(
+                    "/api/v1/projects/test-project",
+                    headers={
+                        "Origin": "https://app.example.test",
+                        "Access-Control-Request-Method": method,
+                        "Access-Control-Request-Headers": "content-type",
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(method, response.headers.get("access-control-allow-methods", ""))
+                self.assertEqual(response.headers.get("access-control-allow-origin"), "https://app.example.test")
+
+
+if __name__ == "__main__":
+    unittest.main()
