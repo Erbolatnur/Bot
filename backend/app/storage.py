@@ -104,6 +104,18 @@ def list_matches(owner_provider: str, owner_id: str, limit: int = 100) -> list[d
 
 
 
+def demo_storage_usage(owner_provider: str, owner_id: str) -> tuple[int, int]:
+    """Return (account bytes, global bytes) used by stored demo files."""
+    with connect() as conn:
+        row = conn.execute("""
+            SELECT
+                COALESCE(SUM(size_bytes) FILTER (WHERE owner_provider=%s AND owner_id=%s), 0) AS account_bytes,
+                COALESCE(SUM(size_bytes), 0) AS global_bytes
+            FROM demos
+        """, (owner_provider, owner_id)).fetchone()
+    return int(row["account_bytes"]), int(row["global_bytes"])
+
+
 def save_demo(demo_id: str, owner_provider: str, owner_id: str, filename: str,
               size_bytes: int, sha256: str, raw_data: bytes, analysis: dict[str, Any], status: str) -> dict[str, Any]:
     with connect() as conn:
