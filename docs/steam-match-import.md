@@ -67,3 +67,10 @@ The backend now has a stateless endpoint:
 3. Add automated tests with mocked Valve responses and run backend lint/build checks.
 4. Decide whether to persist only non-secret match metadata. Persistent automatic sync needs encrypted secret handling and a database; neither is included here.
 5. This endpoint only walks match-sharing codes. It does not yet fetch full match details or download demo files.
+
+
+## Frontend form added (branch only)
+
+The multilingual RU/KZ/EN frontend now has a Steam Match Sharing panel. It is disabled until Steam OpenID sign-in is present. It posts both codes in an HTTPS JSON request body, uses a password-style field for the authentication key, does not store the key in local storage, and clears the key after a successful response. It displays the returned next code so the user can continue walking the match-code chain.
+
+This is not yet a complete match-history viewer: the API currently returns the next share code only. Match details, metadata persistence, and demo download are separate implementation stages. The repository currently has no GitHub Actions workflow runs for the latest frontend commit, so a successful build has not been verified in CI.
