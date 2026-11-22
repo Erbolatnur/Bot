@@ -168,7 +168,7 @@ async def health():
 
 @app.get("/api/v1/status", tags=["system"])
 async def status():
-    steam_ready = bool(settings.steam_openid_enabled and settings.steam_openid_return_url and settings.session_secret)
+    steam_ready = bool(settings.steam_openid_enabled and settings.steam_openid_return_url and settings.steam_openid_realm and settings.session_secret)
     return {
         "project": "CS2 DEMO HUB",
         "phase": "provider-integration",
@@ -176,7 +176,7 @@ async def status():
             "steam_openid": "ready" if steam_ready else "needs_configuration",
             "steam_match_provider": "ready" if settings.steam_web_api_key else "needs_steam_web_api_key",
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
-            "faceit_oauth": "configured" if (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url) else "needs_oauth_credentials",
+            "faceit_oauth": "configured" if _faceit_oauth_ready() else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
