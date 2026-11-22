@@ -38,3 +38,32 @@ The current Render free web service is not a reliable always-on Steam client wor
 ## Current implementation status
 
 This repository currently implements Steam OpenID identity only. No Game Coordinator worker, match-history importer, or persistent match database is deployed. FACEIT history is separate and must not be presented as Steam history.
+
+
+## Implemented API slice (branch only)
+
+The backend now has a stateless endpoint:
+
+- `POST /api/v1/steam/matches/next`
+- Requires the existing signed Steam OpenID session cookie.
+- Accepts `authentication_code` (Steam Game Authentication Code) and `known_match_code` (CSGO- Match Sharing Code) in a JSON request body over HTTPS.
+- Uses the verified session SteamID; the caller cannot choose another SteamID.
+- Calls Valve `ICSGOPlayers_730/GetNextMatchSharingCode/v1/` and returns at most the next share code.
+- Does not persist either submitted code. The user must submit the returned code in the next request to walk forward through history.
+- Requires server environment variable `STEAM_WEB_API_KEY`; it is not configured by this code change.
+
+### Response handling
+
+- HTTP 202: no newer match; return `up_to_date`.
+- HTTP 412: reject the supplied match code; do not retry automatically.
+- HTTP 403: authentication code rejected.
+- HTTP 429/503: stop and retry later; do not loop.
+- Other provider errors are surfaced as safe generic errors.
+
+### Remaining before user-facing release
+
+1. Add a clear consent UI and secure form; never place the auth code in URLs, local storage, analytics, or logs.
+2. Configure `STEAM_WEB_API_KEY` directly in Render after obtaining a Steam Web API key.
+3. Add automated tests with mocked Valve responses and run backend lint/build checks.
+4. Decide whether to persist only non-secret match metadata. Persistent automatic sync needs encrypted secret handling and a database; neither is included here.
+5. This endpoint only walks match-sharing codes. It does not yet fetch full match details or download demo files.
