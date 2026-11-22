@@ -132,7 +132,7 @@ class ProjectCorsTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.options(
                     "/api/v1/projects/test-project",
                     headers={
-                        "Origin": "https://app.example.test",
+                        "Origin": main.settings.frontend_origin,
                         "Access-Control-Request-Method": method,
                         "Access-Control-Request-Headers": "content-type",
                     },
