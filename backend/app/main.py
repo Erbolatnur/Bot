@@ -51,17 +51,10 @@ FACEIT_API = "https://open.faceit.com/data/v4"
 STEAM_OPENID = "https://steamcommunity.com/openid/login"
 COOKIE_NAME = "cs2dh_session"
 FACEIT_COOKIE_NAME = "cs2dh_faceit_session"
-FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth"
-FACEIT_AUTH_URL = "https://accounts.faceit.com"
-FACEIT_TOKEN_URL = "https://api.faceit.com/auth/v1/oauth/token"
-FACEIT_USERINFO_URL = "https://api.faceit.com/auth/v1/resources/userinfo"
 FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth_state"
-FACEIT_SESSION_COOKIE = "cs2dh_faceit_session"
 FACEIT_AUTHORIZATION_ENDPOINT = "https://accounts.faceit.com"
 FACEIT_TOKEN_ENDPOINT = "https://api.faceit.com/auth/v1/oauth/token"
 FACEIT_USERINFO_ENDPOINT = "https://api.faceit.com/auth/v1/resources/userinfo"
-# Temporary in-memory token storage; tokens never reach browser JavaScript.
-faceit_sessions: dict[str, dict] = {}
 
 
 def _b64(data: bytes) -> str:
@@ -163,99 +156,6 @@ def _faceit_oauth_ready() -> bool:
                 and settings.faceit_oauth_redirect_url and settings.session_secret)
 
 
-@app.get("/api/v1/auth/faceit/login", tags=["faceit-auth"])
-async def faceit_login():
-    if not _faceit_oauth_ready():
-        raise HTTPException(status_code=503, detail="FACEIT OAuth is not configured. Add OAuth Client ID and Client Secret in Render.")
-    state = secrets.token_urlsafe(32)
-    verifier = secrets.token_urlsafe(64)
-    challenge = _b64(hashlib.sha256(verifier.encode()).digest())
-    state_cookie = _signed_payload({"state": state, "verifier": verifier, "iat": int(time.time())})
-    params = {
-        "client_id": settings.faceit_oauth_client_id,
-        "redirect_uri": settings.faceit_oauth_redirect_url,
-        "response_type": "code",
-        "scope": "openid profile",
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    response = RedirectResponse(FACEIT_AUTHORIZATION_ENDPOINT + "?" + urlencode(params), status_code=302)
-    response.set_cookie(FACEIT_STATE_COOKIE, state_cookie, httponly=True, secure=True,
-                        samesite="lax", max_age=600, path="/")
-    return response
-
-
-@app.get("/api/v1/auth/faceit/callback", tags=["faceit-auth"])
-async def faceit_callback(request: Request):
-    state_data = _verify_signed_payload(request.cookies.get(FACEIT_STATE_COOKIE))
-    if not state_data or not hmac.compare_digest(str(state_data.get("state", "")), request.query_params.get("state", "")):
-        raise HTTPException(status_code=400, detail="FACEIT OAuth state validation failed")
-    if request.query_params.get("error"):
-        raise HTTPException(status_code=400, detail="FACEIT authorization was denied or failed")
-    code = request.query_params.get("code")
-    if not code:
-        raise HTTPException(status_code=400, detail="FACEIT authorization code is missing")
-    if not _faceit_oauth_ready():
-        raise HTTPException(status_code=503, detail="FACEIT OAuth is not configured")
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(
-            FACEIT_TOKEN_ENDPOINT,
-            auth=(settings.faceit_oauth_client_id, settings.faceit_oauth_client_secret),
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": settings.faceit_oauth_redirect_url,
-                "code_verifier": state_data["verifier"],
-            },
-            headers={"Accept": "application/json"},
-        )
-        if token_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT token exchange failed (HTTP {token_response.status_code})")
-        token_data = token_response.json()
-        access_token = token_data.get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
-        user_response = await client.get(
-            FACEIT_USERINFO_ENDPOINT,
-            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
-        )
-        if user_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
-        user = user_response.json()
-    sid = secrets.token_urlsafe(32)
-    faceit_sessions[sid] = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token"),
-        "expires_at": int(time.time()) + int(token_data.get("expires_in", 3600)),
-        "user": user,
-    }
-    result = RedirectResponse(settings.frontend_origin.rstrip("/") + "/?faceit=connected", status_code=303)
-    result.set_cookie(FACEIT_SESSION_COOKIE, _signed_payload({"sid": sid, "iat": int(time.time())}),
-                      httponly=True, secure=True, samesite="none", max_age=30*86400, path="/")
-    result.delete_cookie(FACEIT_STATE_COOKIE, path="/")
-    return result
-
-
-@app.get("/api/v1/auth/faceit/me", tags=["faceit-auth"])
-async def faceit_auth_me(request: Request):
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE), max_age=30 * 86400)
-    record = faceit_sessions.get(session.get("sid")) if session else None
-    if not record:
-        return {"authenticated": False, "user": None}
-    return {"authenticated": True, "user": record.get("user")}
-
-
-@app.post("/api/v1/auth/faceit/logout", tags=["faceit-auth"])
-async def faceit_logout(request: Request):
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE))
-    if session:
-        faceit_sessions.pop(session.get("sid"), None)
-    response = RedirectResponse(settings.frontend_origin, status_code=303)
-    response.delete_cookie(FACEIT_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="none")
-    return response
-
-
 @app.api_route("/", methods=["GET", "HEAD"], tags=["system"])
 async def root():
     return {"service": "CS2 DEMO HUB API", "docs": "/docs", "health": "/health"}
@@ -325,13 +225,10 @@ async def faceit_player_matches(player_id: str, limit: int = Query(default=20, g
 @app.get("/api/v1/auth/faceit/matches", tags=["faceit-auth"])
 async def faceit_my_matches(request: Request, limit: int = Query(default=20, ge=1, le=100)):
     """Return the connected FACEIT user's public CS2 match history."""
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE), max_age=30 * 86400)
-    record = faceit_sessions.get(session.get("sid")) if session else None
-    if not record:
+    identity = _read_signed_cookie(request.cookies.get(FACEIT_COOKIE_NAME), "faceit-session")
+    if not identity:
         raise HTTPException(status_code=401, detail="Connect your FACEIT account first")
-
-    user = record.get("user") or {}
-    nickname = user.get("nickname") or user.get("preferred_username") or user.get("name")
+    nickname = identity.get("nickname")
     if not nickname:
         raise HTTPException(status_code=422, detail="FACEIT profile did not provide a nickname")
 
