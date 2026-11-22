@@ -274,7 +274,6 @@ async def status():
         "phase": "provider-integration",
         "integrations": {
             "steam_openid": "ready" if steam_ready else "needs_configuration",
-            "faceit_oauth": "ready" if _faceit_oauth_ready() else "needs_configuration",
             "steam_match_provider": "ready" if settings.steam_web_api_key else "needs_steam_web_api_key",
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
             "faceit_oauth": "configured" if (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url) else "needs_oauth_credentials",
