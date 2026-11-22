@@ -24,6 +24,9 @@ jobs:
           pip install -r backend/requirements.txt
       - name: Compile Python modules
         run: python -m compileall -q backend
+      - name: Run backend regression tests
+        working-directory: backend
+        run: python -m unittest discover -s tests -v
 
   frontend:
     name: Frontend production build
