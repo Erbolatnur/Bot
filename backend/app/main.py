@@ -106,7 +106,7 @@ def _signed_payload(data: dict) -> str:
     return payload + "." + _b64(signature)
 
 
-def _verify_signed_payload(token: str | None) -> dict | None:
+def _verify_signed_payload(token: str | None, max_age: int = 600) -> dict | None:
     if not token or not settings.session_secret or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
@@ -115,7 +115,7 @@ def _verify_signed_payload(token: str | None) -> dict | None:
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-        if int(time.time()) - int(data.get("iat", 0)) > 600:
+        if int(time.time()) - int(data.get("iat", 0)) > max_age:
             return None
         return data
     except (ValueError, TypeError, json.JSONDecodeError):
@@ -203,7 +203,7 @@ async def faceit_callback(request: Request):
 
 @app.get("/api/v1/auth/faceit/me", tags=["faceit-auth"])
 async def faceit_auth_me(request: Request):
-    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE))
+    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE), max_age=30 * 86400)
     record = faceit_sessions.get(session.get("sid")) if session else None
     if not record:
         return {"authenticated": False, "user": None}
