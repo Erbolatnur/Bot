@@ -100,7 +100,7 @@ class FaceitOAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_faceit_callback_exchanges_code_and_loads_profile(self):
         state = "test-oauth-state"
         state_cookie = main._signed_cookie(
-            {"state": state, "verifier": "test-pkce-verifier", "iat": 1_900_000_000},
+            {"state": state, "verifier": "test-pkce-verifier", "iat": int(time.time())},
             "faceit-oauth-state",
         )
         transport = httpx.ASGITransport(app=main.app)
