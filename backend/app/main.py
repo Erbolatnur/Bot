@@ -316,6 +316,39 @@ async def faceit_player_matches(player_id: str, limit: int = Query(default=20, g
     return {"items": items, "source": "FACEIT Data API", "player_id": player_id}
 
 
+@app.get("/api/v1/auth/faceit/matches", tags=["faceit-auth"])
+async def faceit_my_matches(request: Request, limit: int = Query(default=20, ge=1, le=100)):
+    """Return the connected FACEIT user's public CS2 match history."""
+    session = _verify_signed_payload(request.cookies.get(FACEIT_SESSION_COOKIE), max_age=30 * 86400)
+    record = faceit_sessions.get(session.get("sid")) if session else None
+    if not record:
+        raise HTTPException(status_code=401, detail="Connect your FACEIT account first")
+
+    user = record.get("user") or {}
+    nickname = user.get("nickname") or user.get("preferred_username") or user.get("name")
+    if not nickname:
+        raise HTTPException(status_code=422, detail="FACEIT profile did not provide a nickname")
+
+    player = await _faceit_get("/players", {"nickname": nickname, "game": "cs2"})
+    player_id = player.get("player_id")
+    if not player_id:
+        raise HTTPException(status_code=404, detail="Could not match the connected FACEIT profile to a CS2 player")
+
+    history = await _faceit_get(f"/players/{player_id}/history", {"game": "cs2", "offset": 0, "limit": limit})
+    items = []
+    for match in history.get("items", []):
+        demo_values = match.get("demo_url") or match.get("demo_urls") or []
+        items.append({
+            "match_id": match.get("match_id"),
+            "started_at": match.get("started_at"),
+            "finished_at": match.get("finished_at"),
+            "game_mode": match.get("game_mode"),
+            "map": (match.get("demo") or {}).get("map") if isinstance(match.get("demo"), dict) else None,
+            "demo_available": bool(demo_values),
+        })
+    return {"items": items, "source": "FACEIT Data API", "player_id": player_id, "nickname": nickname}
+
+
 @app.get("/api/v1/faceit/matches/{match_id}", tags=["faceit"])
 async def faceit_match_details(match_id: str):
     return await _faceit_get(f"/matches/{match_id}")
