@@ -313,6 +313,8 @@ async def decode_steam_match_code(payload: SteamShareCodeRequest, request: Reque
 
 
 DEMO_MAX_BYTES = 100 * 1024 * 1024
+DEMO_ACCOUNT_QUOTA_BYTES = 250 * 1024 * 1024
+DEMO_GLOBAL_QUOTA_BYTES = 700 * 1024 * 1024
 
 
 def _parse_demo_file(path: str) -> dict:
@@ -345,6 +347,7 @@ def _parse_demo_file(path: str) -> dict:
             "rounds_started": int(len(rounds_started)) if rounds_started is not None else 0,
             "rounds_ended": int(len(rounds_ended)) if rounds_ended is not None else 0,
             "deaths_total": int(len(deaths)) if deaths is not None else 0,
+            "kills_total": sum(kill_counts.values()),
             "kills_by_player": sorted(
                 [{"player": name, "kills": count} for name, count in kill_counts.items()],
                 key=lambda item: item["kills"], reverse=True
@@ -375,9 +378,14 @@ async def upload_demo(request: Request, file: UploadFile = File(...)):
             break
         total += len(chunk)
         if total > DEMO_MAX_BYTES:
-            raise HTTPException(status_code=413, detail="Demo file exceeds the 250 MB upload limit")
+            raise HTTPException(status_code=413, detail="Demo file exceeds the 100 MB upload limit")
         chunks.append(chunk)
     raw_data = b"".join(chunks)
+    account_bytes, global_bytes = storage.demo_storage_usage(identity[0], identity[1])
+    if account_bytes + total > DEMO_ACCOUNT_QUOTA_BYTES:
+        raise HTTPException(status_code=413, detail="Your account demo storage quota is 250 MB. Delete older demos before uploading more.")
+    if global_bytes + total > DEMO_GLOBAL_QUOTA_BYTES:
+        raise HTTPException(status_code=507, detail="Demo storage is temporarily full. Delete older demos and try again later.")
     if len(raw_data) < 8 or not (raw_data.startswith(b"PBDEMS2") or raw_data.startswith(b"HL2DEMO")):
         raise HTTPException(status_code=415, detail="File header does not look like a Source/CS2 demo")
     digest = hashlib.sha256(raw_data).hexdigest()
