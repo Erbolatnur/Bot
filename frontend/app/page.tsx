@@ -36,7 +36,7 @@ export default function Home() {
    fetch(API + '/api/v1/status').then(async r => { if(!r.ok) throw new Error(); const d=await r.json(); setApiStatus(d.integrations?.faceit_data_api || 'online'); })
      .catch(() => setApiStatus('offline'));
    fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setSteamId(d.steam_id)}).catch(()=>{});
-   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser(d.user)}).catch(()=>{});
+   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});
  }, []);
  async function loadFaceitMatches(player:FaceitPlayer) {
    setMatchLoading(player.player_id); setMatchErrors(prev=>({...prev,[player.player_id]:''}));
