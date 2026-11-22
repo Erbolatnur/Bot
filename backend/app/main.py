@@ -14,6 +14,8 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app import storage
+
 
 class Settings(BaseSettings):
     app_name: str = "CS2 DEMO HUB API"
@@ -40,9 +42,23 @@ class SteamShareCodeRequest(BaseModel):
     share_code: str = Field(min_length=34, max_length=34)
 
 
+class ProjectCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    data: dict = Field(default_factory=dict)
+
+
+class ProjectUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    status: str | None = Field(default=None, pattern="^(created|processing|completed|failed|archived)$")
+    data: dict | None = None
+
+
 
 
 settings = Settings()
+storage_ready = False
 app = FastAPI(title=settings.app_name, version="0.2.0", description="CS2 match and demo platform API")
 app.add_middleware(
     CORSMiddleware,
@@ -60,6 +76,32 @@ FACEIT_STATE_COOKIE = "cs2dh_faceit_oauth_state"
 FACEIT_AUTHORIZATION_ENDPOINT = "https://accounts.faceit.com"
 FACEIT_TOKEN_ENDPOINT = "https://api.faceit.com/auth/v1/oauth/token"
 FACEIT_USERINFO_ENDPOINT = "https://api.faceit.com/auth/v1/resources/userinfo"
+
+
+@app.on_event("startup")
+def startup_storage():
+    global storage_ready
+    if storage.available():
+        try:
+            storage.init_storage()
+            storage_ready = True
+        except Exception:
+            storage_ready = False
+
+
+def _require_storage():
+    if not storage_ready:
+        raise HTTPException(status_code=503, detail="Persistent database is not connected")
+
+
+def _request_identity(request: Request) -> tuple[str, str] | None:
+    faceit = _read_signed_cookie(request.cookies.get(FACEIT_COOKIE_NAME), "faceit-session")
+    if faceit and faceit.get("faceit_id"):
+        return ("faceit", str(faceit["faceit_id"]))
+    steam = _read_session(request.cookies.get(COOKIE_NAME))
+    if steam and steam.get("steam_id"):
+        return ("steam", str(steam["steam_id"]))
+    return None
 
 
 def _b64(data: bytes) -> str:
@@ -212,6 +254,7 @@ async def status():
             "faceit_data_api": "configured" if settings.faceit_api_key else "needs_api_key",
             "faceit_oauth": "configured" if _faceit_oauth_ready() else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
+            "database": "connected" if storage_ready else ("configured_but_unavailable" if storage.available() else "not_configured"),
             "demo_parser": "not_deployed",
             "video_renderer": "not_deployed",
         },
@@ -220,9 +263,15 @@ async def status():
 
 
 @app.get("/api/v1/matches", tags=["matches"])
-async def list_matches(source: str = "all"):
-    return {"items": [], "source": source, "configured": False,
-            "message": "Steam Game Coordinator and FACEIT player account must be connected before match history is shown."}
+async def list_matches(request: Request, source: str = "all", limit: int = Query(default=100, ge=1, le=200)):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to view saved matches")
+    _require_storage()
+    items = storage.list_matches(identity[0], identity[1], limit)
+    if source != "all":
+        items = [item for item in items if item["provider"] == source]
+    return {"items": items, "source": source, "configured": True}
 
 
 @app.post("/api/v1/steam/matches/decode", tags=["steam"])
@@ -238,6 +287,64 @@ async def decode_steam_match_code(payload: SteamShareCodeRequest):
         "metadata_available": False,
         "message": "The code identifies a Valve match. Full match metadata and cloud demo download require a Steam Game Coordinator connection.",
     }
+
+
+@app.get("/api/v1/projects", tags=["projects"])
+async def projects_list(request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
+    _require_storage()
+    return {"items": storage.list_projects(identity[0], identity[1])}
+
+
+@app.post("/api/v1/projects", tags=["projects"], status_code=201)
+async def projects_create(payload: ProjectCreateRequest, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
+    _require_storage()
+    item = storage.create_project(identity[0], identity[1], payload.title.strip(),
+                                  payload.description.strip(), payload.data)
+    return {"item": item}
+
+
+@app.get("/api/v1/projects/{project_id}", tags=["projects"])
+async def projects_get(project_id: str, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
+    _require_storage()
+    item = storage.get_project(identity[0], identity[1], project_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"item": item}
+
+
+@app.patch("/api/v1/projects/{project_id}", tags=["projects"])
+async def projects_update(project_id: str, payload: ProjectUpdateRequest, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
+    _require_storage()
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No project fields supplied")
+    item = storage.update_project(identity[0], identity[1], project_id, fields)
+    if not item:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"item": item}
+
+
+@app.delete("/api/v1/projects/{project_id}", tags=["projects"])
+async def projects_delete(project_id: str, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT first")
+    _require_storage()
+    if not storage.delete_project(identity[0], identity[1], project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"deleted": True, "project_id": project_id}
 
 
 @app.get("/api/v1/faceit/players", tags=["faceit"])
@@ -298,6 +405,11 @@ async def faceit_my_matches(request: Request, limit: int = Query(default=20, ge=
             "map": (match.get("demo") or {}).get("map") if isinstance(match.get("demo"), dict) else None,
             "demo_available": bool(demo_values),
         })
+    if storage_ready:
+        for item in items:
+            if item.get("match_id"):
+                storage.save_match("faceit", str(item["match_id"]), "faceit",
+                                   str(identity["faceit_id"]), item)
     return {"items": items, "source": "FACEIT Data API", "player_id": player_id, "nickname": nickname}
 
 
@@ -501,7 +613,11 @@ async def steam_next_match(request: Request, payload: SteamMatchImportRequest):
         raise HTTPException(status_code=502, detail="Steam returned an unreadable response")
     if not isinstance(next_code, str) or not next_code.startswith("CSGO-"):
         raise HTTPException(status_code=502, detail="Steam response did not contain a valid next match code")
-    return {"status": "next_match_available", "next_code": next_code}
+    decoded = _decode_steam_share_code(next_code)
+    if storage_ready:
+        storage.save_match("steam", decoded["match_id"], "steam", str(session["steam_id"]),
+                           {"share_code": next_code, **decoded, "metadata_available": False})
+    return {"status": "next_match_available", "next_code": next_code, "decoded": decoded}
 
 
 @app.get("/api/v1/auth/me", tags=["auth"])
