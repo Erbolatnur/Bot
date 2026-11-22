@@ -36,6 +36,11 @@ class SteamMatchImportRequest(BaseModel):
     authentication_code: str = Field(min_length=10, max_length=32)
     known_match_code: str = Field(min_length=20, max_length=64)
 
+class SteamShareCodeRequest(BaseModel):
+    share_code: str = Field(min_length=34, max_length=34)
+
+
+
 
 settings = Settings()
 app = FastAPI(title=settings.app_name, version="0.2.0", description="CS2 match and demo platform API")
@@ -151,6 +156,35 @@ def _verify_signed_payload(token: str | None, max_age: int = 600) -> dict | None
         return None
 
 
+def _decode_steam_share_code(raw_code: str) -> dict:
+    """Decode a legacy CSGO- match share code into its Valve match identifiers."""
+    alphabet = "ABCDEFGHJKLMNOPQRSTUVWXYZabcdefhijkmnopqrstuvwxyz23456789"
+    code = raw_code.strip()
+    match = re.fullmatch(r"CSGO-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", code, flags=re.IGNORECASE)
+    if not match:
+        raise HTTPException(status_code=422, detail="Invalid match sharing code format")
+    compact = "".join(match.groups())
+    if any(char not in alphabet for char in compact):
+        raise HTTPException(status_code=422, detail="Match sharing code contains unsupported characters")
+    value = 0
+    for char in reversed(compact):
+        value = value * len(alphabet) + alphabet.index(char)
+    try:
+        payload = value.to_bytes(18, byteorder="big")
+    except OverflowError:
+        raise HTTPException(status_code=422, detail="Match sharing code is outside the valid range")
+    match_id = int.from_bytes(payload[0:8], byteorder="little")
+    reservation_id = int.from_bytes(payload[8:16], byteorder="little")
+    tv_port = int.from_bytes(payload[16:18], byteorder="little")
+    if match_id == 0 or reservation_id == 0:
+        raise HTTPException(status_code=422, detail="Match sharing code does not contain valid match identifiers")
+    return {
+        "match_id": str(match_id),
+        "reservation_id": str(reservation_id),
+        "tv_port": tv_port,
+    }
+
+
 def _faceit_oauth_ready() -> bool:
     return bool(settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret
                 and settings.faceit_oauth_redirect_url and settings.session_secret)
@@ -189,6 +223,21 @@ async def status():
 async def list_matches(source: str = "all"):
     return {"items": [], "source": source, "configured": False,
             "message": "Steam Game Coordinator and FACEIT player account must be connected before match history is shown."}
+
+
+@app.post("/api/v1/steam/matches/decode", tags=["steam"])
+async def decode_steam_match_code(payload: SteamShareCodeRequest):
+    decoded = _decode_steam_share_code(payload.share_code)
+    normalized = payload.share_code.upper()
+    steam_uri = "steam://run/730//+csgo_download_match%20" + normalized
+    return {
+        "status": "decoded",
+        "share_code": normalized,
+        **decoded,
+        "steam_launch_uri": steam_uri,
+        "metadata_available": False,
+        "message": "The code identifies a Valve match. Full match metadata and cloud demo download require a Steam Game Coordinator connection.",
+    }
 
 
 @app.get("/api/v1/faceit/players", tags=["faceit"])
