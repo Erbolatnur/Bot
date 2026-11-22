@@ -117,6 +117,29 @@ def get_project(owner_provider: str, owner_id: str, project_id: str) -> dict[str
     return dict(row) if row else None
 
 
+def update_project(owner_provider: str, owner_id: str, project_id: str,
+                   fields: dict[str, Any]) -> dict[str, Any] | None:
+    allowed = {"title", "description", "status", "data"}
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return get_project(owner_provider, owner_id, project_id)
+    if "data" in updates:
+        updates["data"] = json.dumps(updates["data"])
+    assignments = []
+    values = []
+    for key, value in updates.items():
+        assignments.append(f"{key}=%s::jsonb" if key == "data" else f"{key}=%s")
+        values.append(value)
+    values.extend([project_id, owner_provider, owner_id])
+    with connect() as conn:
+        row = conn.execute(f"""
+            UPDATE projects SET {", ".join(assignments)}, updated_at=NOW()
+            WHERE id=%s AND owner_provider=%s AND owner_id=%s
+            RETURNING id, title, description, status, data, created_at, updated_at
+        """, values).fetchone()
+    return dict(row) if row else None
+
+
 def delete_project(owner_provider: str, owner_id: str, project_id: str) -> bool:
     with connect() as conn:
         cursor = conn.execute("""
