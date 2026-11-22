@@ -42,3 +42,12 @@ Free hosting may sleep and impose CPU, memory, bandwidth, and storage limits. La
 - The authenticated FACEIT match-history route stores the returned public match metadata when PostgreSQL is connected. Steam next-share-code imports store decoded identifiers, never the Game Authentication Code.
 - Without `DATABASE_URL`, persistent endpoints return a clear 503 response rather than pretending that data was saved.
 - Render's free PostgreSQL instance currently has a 30-day expiry. It is suitable for a temporary prototype only; do not store irreplaceable data until a durable free database and backup policy are confirmed.
+
+
+## CS2 demo library limits
+
+- Demo uploads require a signed-in Steam or FACEIT account.
+- Each `.dem` upload is limited to 100 MB.
+- Each account can store up to 250 MB of demos; the shared demo store is capped at 700 MB to protect the free PostgreSQL instance.
+- Demo files are account-scoped and can be listed, downloaded, or deleted by their owner.
+- Parsed kill totals are derived from recorded `player_death` events with a valid attacker; event totals and kill totals are kept separate.
