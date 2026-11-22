@@ -6,6 +6,7 @@ type FaceitPlayer = { player_id: string; nickname: string; avatar?: string; coun
 type FaceitMatch = { match_id: string; started_at?: number; finished_at?: number; game_mode?: string; map?: string | null; demo_available?: boolean };
 type SteamImportResult = { status: string; next_code: string | null; message?: string };
 type SteamDecodedMatch = { share_code:string; match_id:string; reservation_id:string; tv_port:number; steam_launch_uri:string; metadata_available:boolean };
+type Project = { id:string; title:string; description:string; status:string; updated_at?:string };
 const API = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 const copy = {
  ru: { eyebrow:'COUNTER-STRIKE 2 · MATCH INTELLIGENCE', title:'Твои матчи. Твои демки. Твой анализ.', subtitle:'Единый центр матчей Steam и FACEIT: загрузка демок, разбор раундов и статистика игроков.', steam:'Войти через Steam', faceitLogin:'Войти через FACEIT', faceit:'Найти игрока FACEIT', matches:'Матчи', demos:'Демки', analytics:'Аналитика', replay:'2D Replay', highlights:'Хайлайты', recent:'Последние матчи', empty:'Матчи появятся после подключения источника. Мы не показываем вымышленные матчи или ссылки.', status:'Проверка подключения API…', soon:'Реальные данные · Без вымышленных матчей', nickname:'Никнейм FACEIT', search:'Поиск', loading:'Ищем…', notConfigured:'FACEIT API пока не настроен на сервере. Добавьте FACEIT_API_KEY в Render.', noPlayers:'Игроки не найдены.', steamConnected:'Steam успешно подключён.', steamWait:'Steam авторизация будет доступна после настройки секретного ключа сервера.', steamImport:'Импорт матчей Steam', steamAuthCode:'Game Authentication Code', steamMatchCode:'Последний Match Sharing Code', steamImportHelp:'Коды отправляются только по HTTPS на сервер и не сохраняются. Не вводите пароль Steam или Steam Guard.', steamImportBtn:'Получить следующий код', steamImportBusy:'Запрос к Steam…', steamImportResult:'Следующий код матча', steamUpToDate:'Новых матчей нет.', steamSignIn:'Сначала войдите через Steam.', steamImportError:'Не удалось получить код матча.' },
@@ -40,12 +41,16 @@ export default function Home() {
  const [steamStorageLoaded,setSteamStorageLoaded] = useState(false);
  const [steamDecodeBusy,setSteamDecodeBusy] = useState(false);
  const [steamDecodeError,setSteamDecodeError] = useState('');
+ const [projects,setProjects] = useState<Project[]>([]);
+ const [projectTitle,setProjectTitle] = useState('');
+ const [projectBusy,setProjectBusy] = useState(false);
+ const [projectError,setProjectError] = useState('');
  const t = copy[locale];
  useEffect(() => {
    fetch(API + '/api/v1/status').then(async r => { if(!r.ok) throw new Error(); const d=await r.json(); setApiStatus(d.integrations?.faceit_data_api || 'online'); })
      .catch(() => setApiStatus('offline'));
-   fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setSteamId(d.steam_id)}).catch(()=>{});
-   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});
+   fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated){setSteamId(d.steam_id); void loadProjects();}}).catch(()=>{});
+   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated){setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture}); void loadProjects();}}).catch(()=>{});
    try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
    setSteamStorageLoaded(true);
  }, []);
@@ -95,6 +100,35 @@ export default function Home() {
  }
  const steamLogin = () => { window.location.href=API+'/api/v1/auth/steam/login'; };
  const faceitLogin = () => { window.location.href=API+'/api/v1/auth/faceit/login'; };
+ async function loadProjects() {
+   try {
+     const r=await fetch(API+'/api/v1/projects',{credentials:'include'});
+     if(r.status===401||r.status===503)return;
+     const data=await r.json();
+     if(!r.ok) throw new Error(data.detail||'Не удалось загрузить проекты');
+     setProjects(data.items||[]);
+   } catch(err) { setProjectError(err instanceof Error?err.message:'Ошибка загрузки проектов'); }
+ }
+ async function createProject(e:FormEvent) {
+   e.preventDefault(); if(!projectTitle.trim())return;
+   setProjectBusy(true); setProjectError('');
+   try {
+     const r=await fetch(API+'/api/v1/projects',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:projectTitle.trim()})});
+     const data=await r.json();
+     if(!r.ok) throw new Error(data.detail||'Не удалось создать проект');
+     setProjects(prev=>[data.item,...prev]); setProjectTitle('');
+   } catch(err) { setProjectError(err instanceof Error?err.message:'Ошибка создания проекта'); }
+   finally { setProjectBusy(false); }
+ }
+ async function deleteProject(id:string) {
+   setProjectError('');
+   try {
+     const r=await fetch(API+'/api/v1/projects/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+     const data=await r.json();
+     if(!r.ok) throw new Error(data.detail||'Не удалось удалить проект');
+     setProjects(prev=>prev.filter(p=>p.id!==id));
+   } catch(err) { setProjectError(err instanceof Error?err.message:'Ошибка удаления проекта'); }
+ }
  async function decodeAndSaveSteamMatch(rawCode:string) {
    const r=await fetch(API+'/api/v1/steam/matches/decode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({share_code:rawCode.trim()})});
    const data=await r.json();
@@ -121,5 +155,6 @@ export default function Home() {
  <section className="panel faceit-panel" id="steam-import"><div className="panel-head"><div><span className="eyebrow">STEAM MATCH SHARING</span><h2>{t.steamImport}</h2></div><span className="tag">{steamId?'STEAM CONNECTED':'SIGN IN REQUIRED'}</span></div><p className="fine">{t.steamImportHelp}</p><form className="faceit-search" onSubmit={importNextSteamMatch}><input type="password" autoComplete="off" value={steamAuthCode} onChange={e=>setSteamAuthCode(e.target.value.toUpperCase())} placeholder={t.steamAuthCode} minLength={10} maxLength={32} required disabled={!steamId||steamImportBusy}/><input type="text" autoComplete="off" value={steamMatchCode} onChange={e=>setSteamMatchCode(e.target.value.toUpperCase())} placeholder={t.steamMatchCode} minLength={20} maxLength={64} required disabled={!steamId||steamImportBusy}/><button className="primary" type="submit" disabled={!steamId||steamImportBusy||!steamAuthCode.trim()||!steamMatchCode.trim()}>{steamImportBusy?t.steamImportBusy:t.steamImportBtn}</button></form>{!steamId&&<p className="error-message">{t.steamSignIn}</p>}{steamImportError&&<p className="error-message">{steamImportError}</p>}{steamImportResult&&<div className="module-row"><div><b>{steamImportResult.status==='up_to_date'?t.steamUpToDate:t.steamImportResult}</b><small>{steamImportResult.message||''}</small>{steamImportResult.next_code&&<code>{steamImportResult.next_code}</code>}</div></div>}</section>
  <section className="panel faceit-panel" id="steam-matches"><div className="panel-head"><div><span className="eyebrow">VALVE MATCH SHARING</span><h2>Импорт демо-матча Steam</h2></div><span className="tag">{steamDecodedMatches.length} SAVED</span></div><p className="fine">Вставь код матча CSGO- из CS2 → Смотреть → Ваши матчи. Код проверяется на сервере, а список хранится в этом браузере. Данные карты и счёт появятся после подключения Game Coordinator.</p><form className="faceit-search" onSubmit={addSteamShareCode}><input value={steamShareCode} onChange={e=>setSteamShareCode(e.target.value)} placeholder="CSGO-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" minLength={34} maxLength={34} required disabled={steamDecodeBusy}/><button className="primary" type="submit" disabled={steamDecodeBusy||steamShareCode.trim().length!==34}>{steamDecodeBusy?'Проверка…':'Добавить матч'}</button></form>{steamDecodeError&&<p className="error-message">{steamDecodeError}</p>}{steamDecodedMatches.length===0?<div className="empty"><p>Пока нет добавленных матчей Steam.</p></div>:<div className="match-list">{steamDecodedMatches.map(m=><div className="module-row" key={m.share_code}><div><b>Valve Match · {m.match_id}</b><small>{m.share_code}</small><small>Метаданные и демо-ссылка пока не получены</small></div><a className="button-link" href={m.steam_launch_uri}>Открыть в CS2 ↗</a></div>)}</div>}</section>
  <section className="panel faceit-panel" id="faceit"><div className="panel-head"><div><span className="eyebrow">FACEIT DATA API</span><h2>{t.faceit}</h2></div><span className="tag">{apiStatus==='configured'?'CONNECTED':'SETUP REQUIRED'}</span></div><form className="faceit-search" onSubmit={searchFaceit}><input value={nickname} onChange={e=>setNickname(e.target.value)} placeholder={t.nickname} minLength={2} maxLength={32}/><button className="primary" disabled={busy||nickname.trim().length<2}>{busy?t.loading:t.search}</button></form>{error&&<p className="error-message">{error}</p>}{players.length>0&&<div className="players-list">{players.map(p=><article className="player-card" key={p.player_id}><div className="player-avatar">{p.avatar?<img src={p.avatar} alt=""/>:<span>{p.nickname?.slice(0,1)?.toUpperCase()}</span>}</div><div><b>{p.nickname}</b><small>{p.country||'—'} · {p.games?.cs2?.faceit_elo ? p.games.cs2.faceit_elo+' ELO' : 'CS2'}</small></div><button className="secondary" type="button" disabled={matchLoading===p.player_id} onClick={()=>loadFaceitMatches(p)}>{matchLoading===p.player_id?'Загрузка…':'Показать матчи'}</button>{matchErrors[p.player_id]&&<p className="error-message">{matchErrors[p.player_id]}</p>}{faceitMatches[p.player_id]&&<div className="match-list">{faceitMatches[p.player_id].length===0?<p>История матчей не найдена.</p>:faceitMatches[p.player_id].map(m=><div className="module-row" key={m.match_id}><div><b>{m.map||'Карта не указана'}</b><small>{formatMatchDate(m.started_at)} · {m.game_mode||'CS2'}</small></div><span className="module-state">{m.demo_available?'ДЕМО ЕСТЬ':'ДЕМО НЕ УКАЗАНО'}</span>{m.demo_available&&(faceitDemoUrls[m.match_id]?<a className="button-link" href={faceitDemoUrls[m.match_id]} target="_blank" rel="noopener noreferrer">Скачать демо ↗</a>:<button className="secondary" type="button" disabled={faceitDemoLoading===m.match_id} onClick={()=>loadFaceitDemoUrl(m.match_id)}>{faceitDemoLoading===m.match_id?"Получаем ссылку…":"Получить ссылку на демо"}</button>)}{faceitDemoErrors[m.match_id]&&<small className="error-message">{faceitDemoErrors[m.match_id]}</small>}</div>)}</div>}</article>)}</div>}</section>
+ <section className="panel faceit-panel" id="projects"><div className="panel-head"><div><span className="eyebrow">PROJECT WORKSPACE</span><h2>Мои проекты</h2></div><span className="tag">{projects.length} SAVED</span></div><form className="faceit-search" onSubmit={createProject}><input value={projectTitle} onChange={e=>setProjectTitle(e.target.value)} placeholder="Название проекта" maxLength={120} required/><button className="primary" type="submit" disabled={projectBusy||!projectTitle.trim()}>{projectBusy?'Создание…':'Создать проект'}</button></form>{projectError&&<p className="error-message">{projectError}</p>}{projects.length===0?<div className="empty"><p>Проекты появятся после входа и подключения базы данных.</p></div>:<div className="match-list">{projects.map(p=><div className="module-row" key={p.id}><div><b>{p.title}</b><small>{p.description||'Проект CS2 DEMO HUB'} · {p.status}</small></div><button className="secondary" type="button" onClick={()=>deleteProject(p.id)}>Удалить</button></div>)}</div>}</section>
  <footer><span>CS2 DEMO HUB · FOUNDATION 0.2.0</span><span>{t.soon}</span></footer></main>;
 }

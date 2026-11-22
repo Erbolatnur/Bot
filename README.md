@@ -33,3 +33,12 @@ Free hosting may sleep and impose CPU, memory, bandwidth, and storage limits. La
 - The decoder does not fabricate map names, scores, player lists, or demo URLs. Full metadata and cloud demo downloads require a separate Steam Game Coordinator client connection. Steam OpenID and a Steam Web API key alone cannot perform that step.
 - The Game Authentication Code is sent only to the API over HTTPS for the explicit match-history request; it must never be committed, logged, or pasted into chat. Revoke it in Steam Support if it is exposed.
 
+
+
+## Persistent projects and match history
+
+- PostgreSQL storage is optional and enabled with `DATABASE_URL`. The API creates its `projects` and `matches` tables on startup.
+- Authenticated Steam and FACEIT identities are isolated by provider and account ID. Project list, create, read, update, and delete routes are available under `/api/v1/projects`.
+- The authenticated FACEIT match-history route stores the returned public match metadata when PostgreSQL is connected. Steam next-share-code imports store decoded identifiers, never the Game Authentication Code.
+- Without `DATABASE_URL`, persistent endpoints return a clear 503 response rather than pretending that data was saved.
+- Render's free PostgreSQL instance currently has a 30-day expiry. It is suitable for a temporary prototype only; do not store irreplaceable data until a durable free database and backup policy are confirmed.
