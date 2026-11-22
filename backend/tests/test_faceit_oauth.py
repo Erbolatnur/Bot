@@ -100,3 +100,31 @@ class FaceitOAuthTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SteamShareCodeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_known_share_code_decodes_to_expected_identifiers(self):
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+            response = await client.post(
+                "/api/v1/steam/matches/decode",
+                json={"share_code": "CSGO-GADqf-jjyJ8-cSP2r-smZRo-TO2xK"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["match_id"], "3230642215713767580")
+        self.assertEqual(data["reservation_id"], "3230647599455273103")
+        self.assertEqual(data["tv_port"], 55788)
+        self.assertFalse(data["metadata_available"])
+        self.assertIn("csgo_download_match", data["steam_launch_uri"])
+
+    async def test_invalid_share_code_is_rejected(self):
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+            response = await client.post(
+                "/api/v1/steam/matches/decode",
+                json={"share_code": "not-a-valid-share-code"},
+            )
+
+        self.assertEqual(response.status_code, 422)
