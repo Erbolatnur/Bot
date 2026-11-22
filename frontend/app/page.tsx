@@ -4,7 +4,8 @@ import { FormEvent, useEffect, useState } from 'react';
 type Locale = 'ru' | 'kz' | 'en';
 type FaceitPlayer = { player_id: string; nickname: string; avatar?: string; country?: string; games?: Record<string, { skill_level?: number; faceit_elo?: number }> };
 type FaceitMatch = { match_id: string; started_at?: number; finished_at?: number; game_mode?: string; map?: string | null; demo_available?: boolean };
-type SteamImportResult = { status: string; next_code: string | null; message?: string };\ntype SteamDecodedMatch = { share_code:string; match_id:string; reservation_id:string; tv_port:number; steam_launch_uri:string; metadata_available:boolean };
+type SteamImportResult = { status: string; next_code: string | null; message?: string };
+type SteamDecodedMatch = { share_code:string; match_id:string; reservation_id:string; tv_port:number; steam_launch_uri:string; metadata_available:boolean };
 const API = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 const copy = {
  ru: { eyebrow:'COUNTER-STRIKE 2 · MATCH INTELLIGENCE', title:'Твои матчи. Твои демки. Твой анализ.', subtitle:'Единый центр матчей Steam и FACEIT: загрузка демок, разбор раундов и статистика игроков.', steam:'Войти через Steam', faceitLogin:'Войти через FACEIT', faceit:'Найти игрока FACEIT', matches:'Матчи', demos:'Демки', analytics:'Аналитика', replay:'2D Replay', highlights:'Хайлайты', recent:'Последние матчи', empty:'Матчи появятся после подключения источника. Мы не показываем вымышленные матчи или ссылки.', status:'Проверка подключения API…', soon:'Реальные данные · Без вымышленных матчей', nickname:'Никнейм FACEIT', search:'Поиск', loading:'Ищем…', notConfigured:'FACEIT API пока не настроен на сервере. Добавьте FACEIT_API_KEY в Render.', noPlayers:'Игроки не найдены.', steamConnected:'Steam успешно подключён.', steamWait:'Steam авторизация будет доступна после настройки секретного ключа сервера.', steamImport:'Импорт матчей Steam', steamAuthCode:'Game Authentication Code', steamMatchCode:'Последний Match Sharing Code', steamImportHelp:'Коды отправляются только по HTTPS на сервер и не сохраняются. Не вводите пароль Steam или Steam Guard.', steamImportBtn:'Получить следующий код', steamImportBusy:'Запрос к Steam…', steamImportResult:'Следующий код матча', steamUpToDate:'Новых матчей нет.', steamSignIn:'Сначала войдите через Steam.', steamImportError:'Не удалось получить код матча.' },
@@ -30,13 +31,18 @@ export default function Home() {
  const [steamMatchCode,setSteamMatchCode] = useState('');
  const [steamImportBusy,setSteamImportBusy] = useState(false);
  const [steamImportError,setSteamImportError] = useState('');
- const [steamImportResult,setSteamImportResult] = useState<SteamImportResult|null>(null);\n const [steamShareCode,setSteamShareCode] = useState('');\n const [steamDecodedMatches,setSteamDecodedMatches] = useState<SteamDecodedMatch[]>([]);\n const [steamDecodeBusy,setSteamDecodeBusy] = useState(false);\n const [steamDecodeError,setSteamDecodeError] = useState('');
+ const [steamImportResult,setSteamImportResult] = useState<SteamImportResult|null>(null);
+ const [steamShareCode,setSteamShareCode] = useState('');
+ const [steamDecodedMatches,setSteamDecodedMatches] = useState<SteamDecodedMatch[]>([]);
+ const [steamDecodeBusy,setSteamDecodeBusy] = useState(false);
+ const [steamDecodeError,setSteamDecodeError] = useState('');
  const t = copy[locale];
  useEffect(() => {
    fetch(API + '/api/v1/status').then(async r => { if(!r.ok) throw new Error(); const d=await r.json(); setApiStatus(d.integrations?.faceit_data_api || 'online'); })
      .catch(() => setApiStatus('offline'));
    fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setSteamId(d.steam_id)}).catch(()=>{});
-   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});\n   try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
+   fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});
+   try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
  }, []);
  async function loadFaceitMatches(player:FaceitPlayer) {
    setMatchLoading(player.player_id); setMatchErrors(prev=>({...prev,[player.player_id]:''}));
