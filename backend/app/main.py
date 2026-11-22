@@ -310,6 +310,132 @@ async def decode_steam_match_code(payload: SteamShareCodeRequest, request: Reque
     }
 
 
+
+DEMO_MAX_BYTES = 250 * 1024 * 1024
+
+
+def _parse_demo_file(path: str) -> dict:
+    try:
+        from demoparser2 import DemoParser
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="CS2 demo parser is not installed on this service") from exc
+    try:
+        parser = DemoParser(path)
+        deaths = parser.parse_event("player_death")
+        rounds_started = parser.parse_event("round_start")
+        rounds_ended = parser.parse_event("round_end")
+
+        def records(frame, limit: int = 500) -> list[dict]:
+            if frame is None or frame.empty:
+                return []
+            return json.loads(frame.head(limit).to_json(orient="records"))
+
+        death_rows = records(deaths)
+        kill_counts: dict[str, int] = {}
+        for row in death_rows:
+            attacker = row.get("attacker_name")
+            victim = row.get("user_name")
+            if attacker and attacker != victim:
+                key = str(attacker)
+                kill_counts[key] = kill_counts.get(key, 0) + 1
+        return {
+            "parser": "demoparser2",
+            "parsed": True,
+            "rounds_started": int(len(rounds_started)) if rounds_started is not None else 0,
+            "rounds_ended": int(len(rounds_ended)) if rounds_ended is not None else 0,
+            "deaths_total": int(len(deaths)) if deaths is not None else 0,
+            "kills_by_player": sorted(
+                [{"player": name, "kills": count} for name, count in kill_counts.items()],
+                key=lambda item: item["kills"], reverse=True
+            )[:20],
+            "player_deaths": death_rows,
+            "events_truncated": bool(deaths is not None and len(deaths) > 500),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse this CS2 demo: {type(exc).__name__}") from exc
+
+
+@app.post("/api/v1/demos", tags=["demos"], status_code=201)
+async def upload_demo(request: Request, file: UploadFile = File(...)):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to upload demos")
+    _require_storage()
+    filename = (file.filename or "match.dem").rsplit("/", 1)[-1].rsplit(chr(92), 1)[-1]
+    if not filename.lower().endswith(".dem"):
+        raise HTTPException(status_code=415, detail="Only .dem files are accepted")
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > DEMO_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Demo file exceeds the 250 MB upload limit")
+        chunks.append(chunk)
+    raw_data = b"".join(chunks)
+    if len(raw_data) < 8 or not (raw_data.startswith(b"PBDEMS2") or raw_data.startswith(b"HL2DEMO")):
+        raise HTTPException(status_code=415, detail="File header does not look like a Source/CS2 demo")
+    digest = hashlib.sha256(raw_data).hexdigest()
+    with tempfile.NamedTemporaryFile(suffix=".dem") as temp:
+        temp.write(raw_data)
+        temp.flush()
+        analysis = await run_in_threadpool(_parse_demo_file, temp.name)
+    demo_id = str(uuid.uuid4())
+    item = storage.save_demo(demo_id, identity[0], identity[1], filename, total,
+                             digest, raw_data, analysis, "parsed")
+    return {"item": item}
+
+
+@app.get("/api/v1/demos", tags=["demos"])
+async def list_demos(request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to view demos")
+    _require_storage()
+    return {"items": storage.list_demos(identity[0], identity[1])}
+
+
+@app.get("/api/v1/demos/{demo_id}", tags=["demos"])
+async def get_demo(demo_id: str, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to view demos")
+    _require_storage()
+    item = storage.get_demo(identity[0], identity[1], demo_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Demo not found")
+    return {"item": item}
+
+
+@app.get("/api/v1/demos/{demo_id}/download", tags=["demos"])
+async def download_demo(demo_id: str, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to download demos")
+    _require_storage()
+    item = storage.get_demo(identity[0], identity[1], demo_id, include_data=True)
+    if not item:
+        raise HTTPException(status_code=404, detail="Demo not found")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", item["filename"])
+    return Response(content=bytes(item["raw_data"]), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
+
+
+@app.delete("/api/v1/demos/{demo_id}", tags=["demos"])
+async def delete_demo(demo_id: str, request: Request):
+    identity = _request_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to delete demos")
+    _require_storage()
+    if not storage.delete_demo(identity[0], identity[1], demo_id):
+        raise HTTPException(status_code=404, detail="Demo not found")
+    return {"deleted": True, "demo_id": demo_id}
+
+
 @app.get("/api/v1/projects", tags=["projects"])
 async def projects_list(request: Request):
     identity = _request_identity(request)
