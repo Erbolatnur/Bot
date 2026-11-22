@@ -160,7 +160,7 @@ def _decode_steam_share_code(raw_code: str) -> dict:
     """Decode a legacy CSGO- match share code into its Valve match identifiers."""
     alphabet = "ABCDEFGHJKLMNOPQRSTUVWXYZabcdefhijkmnopqrstuvwxyz23456789"
     code = raw_code.strip()
-    match = re.fullmatch(r"CSGO-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", code, flags=re.IGNORECASE)
+    match = re.fullmatch(r"(?i:CSGO)-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", code)
     if not match:
         raise HTTPException(status_code=422, detail="Invalid match sharing code format")
     compact = "".join(match.groups())
@@ -228,7 +228,7 @@ async def list_matches(source: str = "all"):
 @app.post("/api/v1/steam/matches/decode", tags=["steam"])
 async def decode_steam_match_code(payload: SteamShareCodeRequest):
     decoded = _decode_steam_share_code(payload.share_code)
-    normalized = payload.share_code.upper()
+    normalized = "CSGO-" + "-".join(re.fullmatch(r"(?i:CSGO)-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", payload.share_code.strip()).groups())
     steam_uri = "steam://run/730//+csgo_download_match%20" + normalized
     return {
         "status": "decoded",
