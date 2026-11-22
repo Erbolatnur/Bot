@@ -138,7 +138,9 @@ def _read_signed_cookie(token: str | None, purpose: str) -> dict | None:
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-        if int(time.time()) - int(data.get("iat", 0)) > 30 * 86400:
+        issued_at = int(data.get("iat", 0))
+        now = int(time.time())
+        if issued_at > now + 60 or now - issued_at > 30 * 86400:
             return None
         return data
     except (ValueError, TypeError, json.JSONDecodeError):
@@ -630,35 +632,68 @@ async def faceit_callback(request: Request):
         raise HTTPException(status_code=401, detail="FACEIT authorization was declined or failed")
     code = request.query_params.get("code")
     state = request.query_params.get("state")
+    issuer = request.query_params.get("iss")
     pending = _read_signed_cookie(request.cookies.get(FACEIT_STATE_COOKIE), "faceit-oauth-state")
     if not code or not state or not pending or not hmac.compare_digest(state, str(pending.get("state", ""))):
         raise HTTPException(status_code=400, detail="Invalid or expired FACEIT OAuth state")
+    if issuer and issuer.rstrip("/") != "https://api.faceit.com/auth":
+        raise HTTPException(status_code=400, detail="Unexpected FACEIT OAuth issuer")
     if not (settings.faceit_oauth_client_id and settings.faceit_oauth_client_secret and settings.faceit_oauth_redirect_url):
         raise HTTPException(status_code=503, detail="FACEIT OAuth credentials are not configured")
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(
-            FACEIT_TOKEN_ENDPOINT,
-            data={"grant_type": "authorization_code", "code": code,
-                  "redirect_uri": settings.faceit_oauth_redirect_url,
-                  "code_verifier": pending["verifier"]},
-            auth=(settings.faceit_oauth_client_id, settings.faceit_oauth_client_secret),
-            headers={"Accept": "application/json"},
-        )
-        if token_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT token exchange failed (HTTP {token_response.status_code})")
-        access_token = token_response.json().get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
-        user_response = await client.get(FACEIT_USERINFO_ENDPOINT,
-                                         headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
-        if user_response.is_error:
-            raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
-        profile = user_response.json()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            token_response = await client.post(
+                FACEIT_TOKEN_ENDPOINT,
+                data={"grant_type": "authorization_code", "code": code,
+                      "redirect_uri": settings.faceit_oauth_redirect_url,
+                      "code_verifier": pending["verifier"]},
+                auth=(settings.faceit_oauth_client_id, settings.faceit_oauth_client_secret),
+                headers={"Accept": "application/json"},
+            )
+            if token_response.is_error:
+                raise HTTPException(status_code=502, detail=f"FACEIT token exchange failed (HTTP {token_response.status_code})")
+            try:
+                token_payload = token_response.json()
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="FACEIT returned an unreadable token response") from exc
+            access_token = token_payload.get("access_token")
+            if not access_token:
+                raise HTTPException(status_code=502, detail="FACEIT did not return an access token")
+            user_response = await client.get(
+                FACEIT_USERINFO_ENDPOINT,
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            )
+            if user_response.is_error:
+                raise HTTPException(status_code=502, detail=f"FACEIT user profile request failed (HTTP {user_response.status_code})")
+            try:
+                profile = user_response.json()
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="FACEIT returned an unreadable user profile") from exc
+
+            faceit_id = profile.get("sub") or profile.get("guid") or profile.get("id")
+            nickname = profile.get("preferred_username") or profile.get("nickname") or profile.get("name")
+            picture = profile.get("picture")
+            # OIDC userinfo may contain only standard claims. Resolve the FACEIT
+            # nickname through the Data API when the server-side key is available.
+            if faceit_id and not nickname and settings.faceit_api_key:
+                player_response = await client.get(
+                    f"{FACEIT_API}/players/{faceit_id}",
+                    headers={"Authorization": f"Bearer {settings.faceit_api_key}", "Accept": "application/json"},
+                )
+                if player_response.is_success:
+                    player_profile = player_response.json()
+                    nickname = player_profile.get("nickname")
+                    picture = picture or player_profile.get("avatar")
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="FACEIT authorization service timed out; try again") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not reach FACEIT authorization service") from exc
+
     identity = {
         "provider": "faceit",
-        "faceit_id": profile.get("guid") or profile.get("sub") or profile.get("id"),
-        "nickname": profile.get("nickname") or profile.get("name"),
-        "picture": profile.get("picture"),
+        "faceit_id": faceit_id,
+        "nickname": nickname,
+        "picture": picture,
         "iat": int(time.time()),
     }
     if not identity["faceit_id"]:
