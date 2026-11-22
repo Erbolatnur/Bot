@@ -62,9 +62,9 @@ The backend now has a stateless endpoint:
 
 ### Remaining before user-facing release
 
-1. Add a clear consent UI and secure form; never place the auth code in URLs, local storage, analytics, or logs.
+1. Consent text and a secure form are now present in the frontend. Keep the auth code out of URLs, local storage, analytics, and logs.
 2. Configure `STEAM_WEB_API_KEY` directly in Render after obtaining a Steam Web API key.
-3. Add automated tests with mocked Valve responses and run backend lint/build checks.
+3. CI now runs backend dependency installation + Python compile checks and a Next.js production build. Mocked Valve-response tests are still not implemented.
 4. Decide whether to persist only non-secret match metadata. Persistent automatic sync needs encrypted secret handling and a database; neither is included here.
 5. This endpoint only walks match-sharing codes. It does not yet fetch full match details or download demo files.
 
@@ -73,7 +73,7 @@ The backend now has a stateless endpoint:
 
 The multilingual RU/KZ/EN frontend now has a Steam Match Sharing panel. It is disabled until Steam OpenID sign-in is present. It posts both codes in an HTTPS JSON request body, uses a password-style field for the authentication key, does not store the key in local storage, and clears the key after a successful response. It displays the returned next code so the user can continue walking the match-code chain.
 
-This is not yet a complete match-history viewer: the API currently returns the next share code only. Match details, metadata persistence, and demo download are separate implementation stages. The repository currently has no GitHub Actions workflow runs for the latest frontend commit, so a successful build has not been verified in CI.
+This is not yet a complete match-history viewer: the API currently returns the next share code only. Match details, metadata persistence, and demo download are separate implementation stages. A GitHub Actions workflow is now configured; its current run status is visible in the PR checks.
 
 
 ## FACEIT session correction and CI
@@ -81,3 +81,8 @@ This is not yet a complete match-history viewer: the API currently returns the n
 A review found that the first version of the connected-account history route still depended on an in-memory OAuth session map and that an obsolete duplicate set of FACEIT OAuth routes shadowed the stateless signed-cookie implementation. The obsolete routes and process-local token map have been removed. The history endpoint now reads the signed FACEIT identity cookie and resolves the user's public CS2 history through the configured FACEIT Data API key. The frontend session display now consumes the same stateless identity response.
 
 A GitHub Actions workflow was added for pull requests and the feature branch. It installs backend dependencies and runs Python compile checks, then installs frontend dependencies and runs the Next.js production build. Actual pass/fail status must be confirmed from the workflow run after GitHub starts it.
+
+
+## Latest verification checkpoint
+
+For commit `8e2da2bf85a0b1924d3e2112c579d770aaf72a8f`, the backend syntax job has passed. The frontend production build is still running at the latest status check. The prior commit's frontend build and backend syntax checks both passed. Render production remains on the previous `main` commit until the pull request is reviewed and merged.
