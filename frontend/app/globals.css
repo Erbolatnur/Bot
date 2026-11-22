@@ -31,3 +31,11 @@ html{scroll-behavior:smooth;scroll-padding-top:90px}body{background:#050505;colo
 .match-status{color:#b9b9bf;font-size:9px;letter-spacing:.5px;text-align:right}
 .unified-match-card .button-link{white-space:nowrap;padding:10px 12px;font-size:10px}
 @media(max-width:600px){.match-filters{display:grid;grid-template-columns:1fr 1fr}.match-filters select{min-width:0;width:100%}.match-filters button{grid-column:1/-1}.unified-match-card{gap:9px;flex-wrap:wrap;padding:12px}.match-provider{flex-basis:62px}.match-main{flex-basis:calc(100% - 82px)}.match-status{margin-left:71px;text-align:left}.unified-match-card .button-link{margin-left:auto}}
+
+/* Private CS2 demo library */
+#demo-library .faceit-search input[type=file]{min-width:0;max-width:100%;padding:12px;background:#111113;border:1px solid #39393f;border-radius:12px;color:#ddd}
+#demo-library .module-row{align-items:center;gap:12px}
+#demo-library .module-row>div{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+#demo-library .module-row small{overflow-wrap:anywhere}
+#demo-library .button-link{white-space:nowrap}
+@media(max-width:600px){#demo-library .faceit-search{display:flex;flex-direction:column}#demo-library .faceit-search input[type=file]{width:100%}#demo-library .module-row{flex-wrap:wrap}#demo-library .module-row .button-link{margin-left:auto}}
