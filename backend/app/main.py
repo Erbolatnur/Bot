@@ -258,10 +258,10 @@ async def status():
             "faceit_oauth": "configured" if _faceit_oauth_ready() else "needs_oauth_credentials",
             "faceit_downloads_api": "configured" if settings.faceit_download_token else "access_application_required",
             "database": "connected" if storage_ready else ("configured_but_unavailable" if storage.available() else "not_configured"),
-            "demo_parser": "not_deployed",
+            "demo_parser": "available" if __import__("importlib").util.find_spec("demoparser2") else "not_installed",
             "video_renderer": "not_deployed",
         },
-        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login", "projects_crud", "persistent_match_history"],
+        "capabilities": ["health", "status", "faceit_player_search", "faceit_match_history", "steam_openid_login", "steam_match_next_code_import", "faceit_oauth_login", "projects_crud", "persistent_match_history", "authenticated_demo_upload", "demo_event_parser", "demo_download"],
     }
 
 
@@ -311,7 +311,7 @@ async def decode_steam_match_code(payload: SteamShareCodeRequest, request: Reque
 
 
 
-DEMO_MAX_BYTES = 250 * 1024 * 1024
+DEMO_MAX_BYTES = 100 * 1024 * 1024
 
 
 def _parse_demo_file(path: str) -> dict:
