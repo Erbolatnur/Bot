@@ -72,6 +72,31 @@ class FaceitOAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.headers["location"].startswith(main.FACEIT_AUTHORIZATION_ENDPOINT + "?"))
         self.assertIn(main.FACEIT_STATE_COOKIE, response.headers.get("set-cookie", ""))
 
+
+    async def test_callback_rejects_unexpected_issuer(self):
+        state = "test-oauth-state"
+        state_cookie = main._signed_cookie(
+            {"state": state, "verifier": "test-pkce-verifier", "iat": int(time.time())},
+            "faceit-oauth-state",
+        )
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+            client.cookies.set(main.FACEIT_STATE_COOKIE, state_cookie)
+            response = await client.get(
+                "/api/v1/auth/faceit/callback",
+                params={"code": "test-auth-code", "state": state, "iss": "https://evil.example"},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("issuer", response.json()["detail"].lower())
+
+    async def test_signed_cookie_rejects_future_timestamp(self):
+        token = main._signed_cookie(
+            {"state": "test", "iat": int(time.time()) + 3600},
+            "faceit-oauth-state",
+        )
+        self.assertIsNone(main._read_signed_cookie(token, "faceit-oauth-state"))
+
     async def test_faceit_callback_exchanges_code_and_loads_profile(self):
         state = "test-oauth-state"
         state_cookie = main._signed_cookie(
