@@ -264,27 +264,45 @@ async def status():
 
 @app.get("/api/v1/matches", tags=["matches"])
 async def list_matches(request: Request, source: str = "all", limit: int = Query(default=100, ge=1, le=200)):
-    identity = _request_identity(request)
-    if not identity:
+    if source not in ("all", "steam", "faceit"):
+        raise HTTPException(status_code=422, detail="Source must be all, steam, or faceit")
+    identities: list[tuple[str, str]] = []
+    faceit = _read_signed_cookie(request.cookies.get(FACEIT_COOKIE_NAME), "faceit-session")
+    if faceit and faceit.get("faceit_id"):
+        identities.append(("faceit", str(faceit["faceit_id"])))
+    steam = _read_session(request.cookies.get(COOKIE_NAME))
+    if steam and steam.get("steam_id"):
+        identities.append(("steam", str(steam["steam_id"])))
+    if not identities:
         raise HTTPException(status_code=401, detail="Sign in with Steam or FACEIT to view saved matches")
     _require_storage()
-    items = storage.list_matches(identity[0], identity[1], limit)
+    items: list[dict] = []
+    for owner_provider, owner_id in identities:
+        items.extend(storage.list_matches(owner_provider, owner_id, limit))
     if source != "all":
         items = [item for item in items if item["provider"] == source]
-    return {"items": items, "source": source, "configured": True}
+    items.sort(key=lambda item: item.get("updated_at") or item.get("created_at"), reverse=True)
+    return {"items": items[:limit], "source": source, "configured": True}
 
 
 @app.post("/api/v1/steam/matches/decode", tags=["steam"])
-async def decode_steam_match_code(payload: SteamShareCodeRequest):
+async def decode_steam_match_code(payload: SteamShareCodeRequest, request: Request):
     decoded = _decode_steam_share_code(payload.share_code)
     normalized = "CSGO-" + "-".join(re.fullmatch(r"(?i:CSGO)-(.{5})-(.{5})-(.{5})-(.{5})-(.{5})", payload.share_code.strip()).groups())
     steam_uri = "steam://run/730//+csgo_download_match%20" + normalized
+    persisted = False
+    steam_session = _read_session(request.cookies.get(COOKIE_NAME))
+    if steam_session and storage_ready:
+        storage.save_match("steam", decoded["match_id"], "steam", str(steam_session["steam_id"]),
+                           {"share_code": normalized, **decoded, "metadata_available": False})
+        persisted = True
     return {
         "status": "decoded",
         "share_code": normalized,
         **decoded,
         "steam_launch_uri": steam_uri,
         "metadata_available": False,
+        "persisted": persisted,
         "message": "The code identifies a Valve match. Full match metadata and cloud demo download require a Steam Game Coordinator connection.",
     }
 
