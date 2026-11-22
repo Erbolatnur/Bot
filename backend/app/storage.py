@@ -62,6 +62,24 @@ def init_storage() -> None:
             CREATE INDEX IF NOT EXISTS matches_owner_created_idx
             ON matches(owner_provider, owner_id, created_at DESC)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS demos (
+                id TEXT PRIMARY KEY,
+                owner_provider TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                size_bytes BIGINT NOT NULL,
+                sha256 TEXT NOT NULL,
+                raw_data BYTEA NOT NULL,
+                analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'uploaded',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS demos_owner_created_idx
+            ON demos(owner_provider, owner_id, created_at DESC)
+        """)
 
 
 def save_match(provider: str, match_id: str, owner_provider: str, owner_id: str,
@@ -84,6 +102,44 @@ def list_matches(owner_provider: str, owner_id: str, limit: int = 100) -> list[d
         """, (owner_provider, owner_id, limit)).fetchall()
     return [dict(row) for row in rows]
 
+
+
+def save_demo(demo_id: str, owner_provider: str, owner_id: str, filename: str,
+              size_bytes: int, sha256: str, raw_data: bytes, analysis: dict[str, Any], status: str) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("""
+            INSERT INTO demos(id, owner_provider, owner_id, filename, size_bytes, sha256, raw_data, analysis, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            RETURNING id, filename, size_bytes, sha256, analysis, status, created_at
+        """, (demo_id, owner_provider, owner_id, filename, size_bytes, sha256,
+              raw_data, json.dumps(analysis), status)).fetchone()
+    return dict(row)
+
+
+def list_demos(owner_provider: str, owner_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT id, filename, size_bytes, sha256, analysis, status, created_at
+            FROM demos WHERE owner_provider=%s AND owner_id=%s ORDER BY created_at DESC
+        """, (owner_provider, owner_id)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_demo(owner_provider: str, owner_id: str, demo_id: str, include_data: bool = False) -> dict[str, Any] | None:
+    columns = "id, filename, size_bytes, sha256, analysis, status, created_at"
+    if include_data:
+        columns += ", raw_data"
+    with connect() as conn:
+        row = conn.execute(f"SELECT {columns} FROM demos WHERE id=%s AND owner_provider=%s AND owner_id=%s",
+                           (demo_id, owner_provider, owner_id)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_demo(owner_provider: str, owner_id: str, demo_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM demos WHERE id=%s AND owner_provider=%s AND owner_id=%s",
+                              (demo_id, owner_provider, owner_id))
+    return cursor.rowcount > 0
 
 def create_project(owner_provider: str, owner_id: str, title: str,
                    description: str = "", data: dict[str, Any] | None = None) -> dict[str, Any]:
