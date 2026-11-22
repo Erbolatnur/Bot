@@ -74,3 +74,10 @@ The backend now has a stateless endpoint:
 The multilingual RU/KZ/EN frontend now has a Steam Match Sharing panel. It is disabled until Steam OpenID sign-in is present. It posts both codes in an HTTPS JSON request body, uses a password-style field for the authentication key, does not store the key in local storage, and clears the key after a successful response. It displays the returned next code so the user can continue walking the match-code chain.
 
 This is not yet a complete match-history viewer: the API currently returns the next share code only. Match details, metadata persistence, and demo download are separate implementation stages. The repository currently has no GitHub Actions workflow runs for the latest frontend commit, so a successful build has not been verified in CI.
+
+
+## FACEIT session correction and CI
+
+A review found that the first version of the connected-account history route still depended on an in-memory OAuth session map and that an obsolete duplicate set of FACEIT OAuth routes shadowed the stateless signed-cookie implementation. The obsolete routes and process-local token map have been removed. The history endpoint now reads the signed FACEIT identity cookie and resolves the user's public CS2 history through the configured FACEIT Data API key. The frontend session display now consumes the same stateless identity response.
+
+A GitHub Actions workflow was added for pull requests and the feature branch. It installs backend dependencies and runs Python compile checks, then installs frontend dependencies and runs the Next.js production build. Actual pass/fail status must be confirmed from the workflow run after GitHub starts it.
