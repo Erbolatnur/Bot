@@ -86,7 +86,7 @@ async def _faceit_get(path: str, params: dict | None = None) -> dict:
     return response.json()
 
 
-@app.get("/", tags=["system"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["system"])
 async def root():
     return {"service": "CS2 DEMO HUB API", "docs": "/docs", "health": "/health"}
 
