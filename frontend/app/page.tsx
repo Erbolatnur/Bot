@@ -34,6 +34,7 @@ export default function Home() {
  const [steamImportResult,setSteamImportResult] = useState<SteamImportResult|null>(null);
  const [steamShareCode,setSteamShareCode] = useState('');
  const [steamDecodedMatches,setSteamDecodedMatches] = useState<SteamDecodedMatch[]>([]);
+ const [steamStorageLoaded,setSteamStorageLoaded] = useState(false);
  const [steamDecodeBusy,setSteamDecodeBusy] = useState(false);
  const [steamDecodeError,setSteamDecodeError] = useState('');
  const t = copy[locale];
@@ -43,8 +44,9 @@ export default function Home() {
    fetch(API + '/api/v1/auth/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setSteamId(d.steam_id)}).catch(()=>{});
    fetch(API + '/api/v1/auth/faceit/me',{credentials:'include'}).then(r=>r.json()).then(d=>{if(d.authenticated)setFaceitUser({nickname:d.nickname,sub:d.faceit_id,picture:d.picture})}).catch(()=>{});
    try { const saved=window.localStorage.getItem('cs2dh-steam-matches'); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed))setSteamDecodedMatches(parsed); } } catch {}
+   setSteamStorageLoaded(true);
  }, []);
- useEffect(()=>{ try { window.localStorage.setItem('cs2dh-steam-matches',JSON.stringify(steamDecodedMatches)); } catch {} },[steamDecodedMatches]);
+ useEffect(()=>{ if(!steamStorageLoaded)return; try { window.localStorage.setItem('cs2dh-steam-matches',JSON.stringify(steamDecodedMatches)); } catch {} },[steamDecodedMatches,steamStorageLoaded]);
  async function loadFaceitMatches(player:FaceitPlayer) {
    setMatchLoading(player.player_id); setMatchErrors(prev=>({...prev,[player.player_id]:''}));
    try {
