@@ -145,3 +145,19 @@ class DemoUploadAuthTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
             response = await client.get("/api/v1/demos")
         self.assertEqual(response.status_code, 401)
+
+
+class DemoCorsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_preflight_is_allowed(self):
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+            response = await client.options(
+                "/api/v1/demos/test-id",
+                headers={
+                    "Origin": main.settings.frontend_origin,
+                    "Access-Control-Request-Method": "DELETE",
+                    "Access-Control-Request-Headers": "content-type",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("DELETE", response.headers.get("access-control-allow-methods", ""))
