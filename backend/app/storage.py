@@ -1,0 +1,125 @@
+"""Small PostgreSQL persistence layer for user projects and imported match metadata."""
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+def database_url() -> str | None:
+    return os.getenv("DATABASE_URL")
+
+
+def available() -> bool:
+    return bool(database_url())
+
+
+def connect():
+    url = database_url()
+    if not url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(url, connect_timeout=8, row_factory=dict_row)
+
+
+def init_storage() -> None:
+    if not available():
+        return
+    with connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                owner_provider TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'created',
+                data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS projects_owner_updated_idx
+            ON projects(owner_provider, owner_id, updated_at DESC)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                provider TEXT NOT NULL,
+                match_id TEXT NOT NULL,
+                owner_provider TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY(provider, match_id, owner_provider, owner_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS matches_owner_created_idx
+            ON matches(owner_provider, owner_id, created_at DESC)
+        """)
+
+
+def save_match(provider: str, match_id: str, owner_provider: str, owner_id: str,
+               payload: dict[str, Any]) -> None:
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO matches(provider, match_id, owner_provider, owner_id, payload)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT(provider, match_id, owner_provider, owner_id)
+            DO UPDATE SET payload=EXCLUDED.payload, updated_at=NOW()
+        """, (provider, match_id, owner_provider, owner_id, json.dumps(payload)))
+
+
+def list_matches(owner_provider: str, owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT provider, match_id, payload, created_at, updated_at
+            FROM matches WHERE owner_provider=%s AND owner_id=%s
+            ORDER BY created_at DESC LIMIT %s
+        """, (owner_provider, owner_id, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_project(owner_provider: str, owner_id: str, title: str,
+                   description: str = "", data: dict[str, Any] | None = None) -> dict[str, Any]:
+    project_id = str(uuid.uuid4())
+    with connect() as conn:
+        row = conn.execute("""
+            INSERT INTO projects(id, owner_provider, owner_id, title, description, data)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+            RETURNING id, title, description, status, data, created_at, updated_at
+        """, (project_id, owner_provider, owner_id, title, description,
+              json.dumps(data or {}))).fetchone()
+    return dict(row)
+
+
+def list_projects(owner_provider: str, owner_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT id, title, description, status, data, created_at, updated_at
+            FROM projects WHERE owner_provider=%s AND owner_id=%s
+            ORDER BY updated_at DESC
+        """, (owner_provider, owner_id)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_project(owner_provider: str, owner_id: str, project_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("""
+            SELECT id, title, description, status, data, created_at, updated_at
+            FROM projects WHERE id=%s AND owner_provider=%s AND owner_id=%s
+        """, (project_id, owner_provider, owner_id)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_project(owner_provider: str, owner_id: str, project_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("""
+            DELETE FROM projects WHERE id=%s AND owner_provider=%s AND owner_id=%s
+        """, (project_id, owner_provider, owner_id))
+    return cursor.rowcount > 0
